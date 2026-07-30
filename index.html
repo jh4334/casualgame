@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>슬라임 머지 디펜스</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #2a3d1f;
+    overflow: hidden;
+    touch-action: none;
+    font-family: 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+    -webkit-user-select: none; user-select: none;
+  }
+  #wrap {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas { display: block; border-radius: 8px; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game"></canvas></div>
+<script>
+"use strict";
+// ============================================================
+//  슬라임 머지 디펜스 — Merge Defense Game
+//  같은 무기를 합쳐서 강화하고, 몰려오는 슬라임을 막아내세요!
+// ============================================================
+
+const W = 480, H = 840;
+const COLS = 5, ROWS = 3;
+const GRID_TOP = H - 300;          // 격자판 시작 y
+const CELL = W / COLS;             // 96
+const FIELD_TOP = 70;              // 전장 시작 y (HUD 아래)
+const MAX_TIER = 10;
+
+const TIER_EMOJI = ["⛏️","🗡️","🏹","🪃","🔱","⚔️","🪄","🔥","⚡","🌟"];
+const TIER_COLOR = ["#9b7bd8","#8fd14f","#e8a33d","#d97b4f","#4fb7d9","#d94f6b","#b04fd9","#ff7b2e","#ffd93d","#7dffb2"];
+const TIER_NAME  = ["곡괭이","단검","활","부메랑","삼지창","대검","마법지팡이","화염","번개","별의 힘"];
+
+// ---------- 캔버스 & 스케일 ----------
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+function fit() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.style.width = W * scale + "px";
+  canvas.style.height = H * scale + "px";
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", fit);
+fit();
+
+function ptFromEvent(e) {
+  const r = canvas.getBoundingClientRect();
+  const cx = (e.touches ? e.touches[0].clientX : e.clientX);
+  const cy = (e.touches ? e.touches[0].clientY : e.clientY);
+  return { x: (cx - r.left) / r.width * W, y: (cy - r.top) / r.height * H };
+}
+
+// ---------- 사운드 (WebAudio) ----------
+let audioCtx = null, soundOn = true;
+function beep(freq, dur, type, vol, slide) {
+  if (!soundOn) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = type || "square";
+    o.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    if (slide) o.frequency.exponentialRampToValueAtTime(slide, audioCtx.currentTime + dur);
+    g.gain.setValueAtTime(vol || 0.04, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + dur);
+  } catch (e) {}
+}
+const sfx = {
+  shoot: () => beep(700, 0.06, "square", 0.015, 400),
+  hit:   () => beep(250, 0.05, "triangle", 0.03),
+  kill:  () => beep(500, 0.15, "triangle", 0.04, 900),
+  merge: () => { beep(400, 0.1, "square", 0.04, 800); setTimeout(() => beep(800, 0.15, "square", 0.04, 1200), 80); },
+  buy:   () => beep(600, 0.08, "sine", 0.05, 750),
+  hurt:  () => beep(150, 0.3, "sawtooth", 0.06, 60),
+  wave:  () => { beep(523, 0.12, "square", 0.04); setTimeout(() => beep(659, 0.12, "square", 0.04), 120); setTimeout(() => beep(784, 0.2, "square", 0.04), 240); },
+  error: () => beep(180, 0.12, "sawtooth", 0.04),
+};
+
+// ---------- 게임 상태 ----------
+let state = "title";   // title | play | over
+let grid, enemies, projectiles, particles, floats;
+let gold, lives, wave, buyCount, kills;
+let spawnQueue, spawnTimer, waveDelay, waveActive;
+let shakeT = 0, flashT = 0, time = 0;
+let drag = null;       // {idx, x, y}
+let best = +(localStorage.getItem("smd_best") || 0);
+
+function reset() {
+  grid = Array(ROWS * COLS).fill(null);
+  enemies = []; projectiles = []; particles = []; floats = [];
+  gold = 120; lives = 10; wave = 0; buyCount = 0; kills = 0;
+  spawnQueue = 0; spawnTimer = 0; waveDelay = 2; waveActive = false;
+  shakeT = 0; flashT = 0;
+  addUnit(1); addUnit(1);
+}
+
+function buyCost() { return Math.floor(30 * Math.pow(1.16, buyCount)); }
+
+function addUnit(tier) {
+  const empty = [];
+  for (let i = 0; i < grid.length; i++) if (!grid[i]) empty.push(i);
+  if (!empty.length) return false;
+  const idx = empty[Math.floor(Math.random() * empty.length)];
+  grid[idx] = { tier, cd: Math.random() * 0.5, pop: 1, recoil: 0 };
+  return true;
+}
+
+// ---------- 유닛 능력치 ----------
+function unitDamage(t) { return Math.round(10 * Math.pow(2.5, t - 1)); }
+function unitRate(t)   { return 1.0 + t * 0.06; }   // 초당 공격 횟수
+
+// ---------- 웨이브 ----------
+function startWave() {
+  wave++;
+  waveActive = true;
+  spawnQueue = 7 + Math.floor(wave * 1.3);
+  spawnTimer = 0.5;
+  sfx.wave();
+  floatText(W / 2, H / 2 - 120, wave % 5 === 0 ? "👑 보스 웨이브 " + wave : "웨이브 " + wave, "#fff", 30, 1.4);
+}
+function enemyBaseHp() { return 22 * Math.pow(1.27, wave - 1); }
+
+function spawnEnemy() {
+  const isBoss = (wave % 5 === 0) && spawnQueue === 1; // 5의 배수 웨이브 마지막은 보스
+  const hp = Math.round(enemyBaseHp() * (isBoss ? 14 : 0.85 + Math.random() * 0.4));
+  enemies.push({
+    x: 60 + Math.random() * (W - 120),
+    y: FIELD_TOP - 40,
+    hp, maxHp: hp,
+    speed: (isBoss ? 16 : 26 + Math.random() * 14) * Math.pow(1.012, wave),
+    r: isBoss ? 46 : 26 + Math.random() * 6,
+    boss: isBoss,
+    wob: Math.random() * Math.PI * 2,
+    hitT: 0,
+    flower: Math.random() < 0.5 ? "#ffb7d5" : "#fff",
+  });
+}
+
+function killGold(e) { return Math.max(2, Math.floor((4 + wave * 1.6) * (e.boss ? 10 : 1))); }
+
+// ---------- 이펙트 ----------
+function floatText(x, y, txt, color, size, life) {
+  floats.push({ x, y, txt, color, size: size || 16, life: life || 0.8, t: 0 });
+}
+function burst(x, y, color, n, spd) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = (0.3 + Math.random()) * (spd || 120);
+    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 40, life: 0.5 + Math.random() * 0.4, t: 0, color, r: 2 + Math.random() * 4 });
+  }
+}
+
+// ---------- 입력 ----------
+const BTN = { buy: { x: 12, y: GRID_TOP - 66, w: 210, h: 54 }, sound: { x: W - 54, y: 14, w: 42, h: 42 } };
+function inBtn(p, b) { return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; }
+function slotAt(p) {
+  if (p.y < GRID_TOP || p.y > GRID_TOP + ROWS * (CELL - 8)) return -1;
+  const c = Math.floor(p.x / CELL);
+  const r = Math.floor((p.y - GRID_TOP) / (CELL - 8));
+  if (c < 0 || c >= COLS || r < 0 || r >= ROWS) return -1;
+  return r * COLS + c;
+}
+
+function onDown(e) {
+  e.preventDefault();
+  const p = ptFromEvent(e);
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+
+  if (state === "title") { state = "play"; reset(); sfx.wave(); return; }
+  if (state === "over")  { state = "title"; return; }
+
+  if (inBtn(p, BTN.sound)) { soundOn = !soundOn; return; }
+  if (inBtn(p, BTN.buy)) {
+    if (gold >= buyCost()) {
+      // 웨이브가 오를수록 조금 더 높은 등급이 나올 확률
+      let t = 1;
+      if (wave >= 8 && Math.random() < 0.35) t = 2;
+      if (wave >= 16 && Math.random() < 0.2) t = 3;
+      if (addUnit(t)) { gold -= buyCost(); buyCount++; sfx.buy(); }
+      else { floatText(BTN.buy.x + BTN.buy.w / 2, BTN.buy.y - 10, "칸이 가득 찼어요!", "#ffd93d", 18); sfx.error(); }
+    } else { floatText(BTN.buy.x + BTN.buy.w / 2, BTN.buy.y - 10, "골드 부족!", "#ff6b6b", 18); sfx.error(); }
+    return;
+  }
+  const idx = slotAt(p);
+  if (idx >= 0 && grid[idx]) drag = { idx, x: p.x, y: p.y };
+}
+function onMove(e) {
+  e.preventDefault();
+  if (!drag) return;
+  const p = ptFromEvent(e);
+  drag.x = p.x; drag.y = p.y;
+}
+function onUp(e) {
+  e.preventDefault();
+  if (!drag) return;
+  const to = slotAt({ x: drag.x, y: drag.y });
+  const from = drag.idx;
+  if (to >= 0 && to !== from && grid[from]) {
+    const a = grid[from], b = grid[to];
+    if (!b) { grid[to] = a; grid[from] = null; }                       // 이동
+    else if (b.tier === a.tier && a.tier < MAX_TIER) {                 // 합성!
+      grid[to] = { tier: a.tier + 1, cd: 0, pop: 1, recoil: 0 };
+      grid[from] = null;
+      const c = cellCenter(to);
+      burst(c.x, c.y, TIER_COLOR[a.tier], 24, 160);
+      floatText(c.x, c.y - 40, TIER_NAME[a.tier] + " 획득!", TIER_COLOR[a.tier], 20, 1.2);
+      sfx.merge();
+    } else if (b.tier === a.tier && a.tier >= MAX_TIER) {
+      floatText(drag.x, drag.y - 30, "최고 등급!", "#ffd93d", 18); sfx.error();
+    } else { grid[to] = a; grid[from] = b; }                           // 교환
+  }
+  drag = null;
+}
+canvas.addEventListener("mousedown", onDown);
+canvas.addEventListener("mousemove", onMove);
+window.addEventListener("mouseup", onUp);
+canvas.addEventListener("touchstart", onDown, { passive: false });
+canvas.addEventListener("touchmove", onMove, { passive: false });
+canvas.addEventListener("touchend", onUp, { passive: false });
+
+function cellCenter(idx) {
+  const c = idx % COLS, r = Math.floor(idx / COLS);
+  return { x: c * CELL + CELL / 2, y: GRID_TOP + r * (CELL - 8) + (CELL - 8) / 2 };
+}
+
+// ---------- 업데이트 ----------
+function update(dt) {
+  time += dt;
+  if (state !== "play") return;
+
+  // 웨이브 진행
+  if (!waveActive) {
+    waveDelay -= dt;
+    if (waveDelay <= 0) startWave();
+  } else {
+    if (spawnQueue > 0) {
+      spawnTimer -= dt;
+      if (spawnTimer <= 0) {
+        spawnEnemy();
+        spawnQueue--;
+        spawnTimer = Math.max(0.35, 1.5 - wave * 0.04) * (0.7 + Math.random() * 0.6);
+      }
+    } else if (enemies.length === 0) {
+      waveActive = false;
+      waveDelay = 2.5;
+      const bonus = 25 + wave * 12;
+      gold += bonus;
+      floatText(W / 2, H / 2 - 80, "웨이브 클리어! +" + bonus + "💰", "#ffd93d", 24, 1.5);
+    }
+  }
+
+  // 적 이동
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    e.wob += dt * 4;
+    e.y += e.speed * dt;
+    e.x += Math.sin(e.wob) * 12 * dt;
+    e.x = Math.max(e.r, Math.min(W - e.r, e.x));
+    if (e.hitT > 0) e.hitT -= dt;
+    if (e.y > GRID_TOP - e.r - 20) {   // 방어선 도달
+      enemies.splice(i, 1);
+      lives -= e.boss ? 3 : 1;
+      shakeT = 0.35; flashT = 0.3;
+      sfx.hurt();
+      burst(e.x, GRID_TOP - 30, "#ff5555", 18, 150);
+      if (lives <= 0) {
+        lives = 0;
+        state = "over";
+        if (wave > best) { best = wave; localStorage.setItem("smd_best", best); }
+      }
+    }
+  }
+
+  // 유닛 공격
+  for (let i = 0; i < grid.length; i++) {
+    const u = grid[i];
+    if (!u) continue;
+    if (u.pop > 0) u.pop -= dt * 3;
+    if (u.recoil > 0) u.recoil -= dt * 6;
+    u.cd -= dt;
+    if (u.cd <= 0 && enemies.length) {
+      // 방어선에 가장 가까운(가장 아래) 적을 노린다
+      let target = null;
+      for (const e of enemies) if (e.y > FIELD_TOP - 10 && (!target || e.y > target.y)) target = e;
+      if (target) {
+        const c = cellCenter(i);
+        projectiles.push({ x: c.x, y: c.y - 20, target, speed: 620, dmg: unitDamage(u.tier), tier: u.tier });
+        u.cd = 1 / unitRate(u.tier);
+        u.recoil = 1;
+        sfx.shoot();
+      }
+    }
+  }
+
+  // 투사체
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    const t = p.target;
+    if (!t || t.hp <= 0 || enemies.indexOf(t) === -1) { projectiles.splice(i, 1); continue; }
+    const dx = t.x - p.x, dy = t.y - p.y;
+    const d = Math.hypot(dx, dy);
+    if (d < t.r + 8) {
+      t.hp -= p.dmg;
+      t.hitT = 0.12;
+      burst(p.x, p.y, TIER_COLOR[p.tier - 1], 5, 90);
+      sfx.hit();
+      projectiles.splice(i, 1);
+      if (t.hp <= 0) {
+        const gi = enemies.indexOf(t);
+        if (gi >= 0) enemies.splice(gi, 1);
+        const g = killGold(t);
+        gold += g; kills++;
+        floatText(t.x, t.y - t.r - 10, "+" + g, "#ffd93d", 18);
+        burst(t.x, t.y, "#c9d94f", t.boss ? 40 : 14, t.boss ? 220 : 130);
+        sfx.kill();
+      }
+    } else {
+      p.x += dx / d * p.speed * dt;
+      p.y += dy / d * p.speed * dt;
+    }
+  }
+
+  // 파티클 & 텍스트
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.t += dt;
+    if (p.t > p.life) { particles.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 300 * dt;
+  }
+  for (let i = floats.length - 1; i >= 0; i--) {
+    const f = floats[i];
+    f.t += dt;
+    if (f.t > f.life) floats.splice(i, 1);
+  }
+  if (shakeT > 0) shakeT -= dt;
+  if (flashT > 0) flashT -= dt;
+}
+
+// ---------- 그리기 ----------
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function outlinedText(txt, x, y, size, fill, stroke, lw) {
+  ctx.font = "900 " + size + "px 'Segoe UI', 'Malgun Gothic', sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = stroke || "rgba(60,70,20,0.9)";
+  ctx.lineWidth = lw || Math.max(3, size / 5);
+  ctx.strokeText(txt, x, y);
+  ctx.fillStyle = fill;
+  ctx.fillText(txt, x, y);
+}
+
+function drawField() {
+  // 잔디 배경 (체크무늬)
+  ctx.fillStyle = "#a8cc3e";
+  ctx.fillRect(0, 0, W, GRID_TOP);
+  const cs = 60;
+  ctx.fillStyle = "rgba(255,255,255,0.06)";
+  for (let y = 0; y < GRID_TOP / cs + 1; y++)
+    for (let x = 0; x < W / cs; x++)
+      if ((x + y) % 2 === 0) ctx.fillRect(x * cs, y * cs, cs, Math.min(cs, GRID_TOP - y * cs));
+  // 양옆 진한 잔디 길 표현
+  ctx.fillStyle = "#8db32e";
+  ctx.fillRect(0, 0, 26, GRID_TOP);
+  ctx.fillRect(W - 26, 0, 26, GRID_TOP);
+  // 방어선
+  const ly = GRID_TOP - 14;
+  ctx.strokeStyle = "rgba(255,80,80,0.55)";
+  ctx.lineWidth = 4;
+  ctx.setLineDash([14, 10]);
+  ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(W, ly); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawEnemy(e) {
+  const squish = 1 + Math.sin(e.wob * 2) * 0.06;
+  ctx.save();
+  ctx.translate(e.x, e.y);
+  // 그림자
+  ctx.fillStyle = "rgba(0,0,0,0.15)";
+  ctx.beginPath(); ctx.ellipse(0, e.r * 0.85, e.r * 0.9, e.r * 0.3, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.scale(squish, 2 - squish);
+  // 몸통 (노란 블롭)
+  const bodyCol = e.hitT > 0 ? "#fff" : (e.boss ? "#e8d44f" : "#d9d06a");
+  ctx.fillStyle = bodyCol;
+  ctx.beginPath();
+  ctx.moveTo(-e.r, e.r * 0.8);
+  ctx.bezierCurveTo(-e.r * 1.15, -e.r * 0.6, -e.r * 0.5, -e.r, 0, -e.r);
+  ctx.bezierCurveTo(e.r * 0.5, -e.r, e.r * 1.15, -e.r * 0.6, e.r, e.r * 0.8);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = "rgba(120,110,40,0.5)"; ctx.lineWidth = 2; ctx.stroke();
+  // 가시
+  ctx.fillStyle = bodyCol;
+  for (let i = -2; i <= 2; i++) {
+    ctx.beginPath();
+    ctx.moveTo(i * e.r * 0.35 - 4, -e.r * 0.55);
+    ctx.lineTo(i * e.r * 0.35, -e.r * 1.05);
+    ctx.lineTo(i * e.r * 0.35 + 4, -e.r * 0.55);
+    ctx.fill();
+  }
+  // 얼굴
+  ctx.fillStyle = "#5a4a1a";
+  ctx.beginPath(); ctx.arc(-e.r * 0.3, 0, e.r * 0.08, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(e.r * 0.3, 0, e.r * 0.08, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "#5a4a1a"; ctx.lineWidth = Math.max(2, e.r * 0.07);
+  ctx.beginPath(); ctx.arc(0, e.r * 0.15, e.r * 0.25, 0.2, Math.PI - 0.2); ctx.stroke();
+  // 머리 위 꽃
+  const fy = -e.r * 1.1;
+  for (let i = 0; i < 6; i++) {
+    const a = i / 6 * Math.PI * 2 + e.wob * 0.3;
+    ctx.fillStyle = e.flower;
+    ctx.beginPath();
+    ctx.ellipse(Math.cos(a) * e.r * 0.28, fy + Math.sin(a) * e.r * 0.28, e.r * 0.18, e.r * 0.12, a, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = "#e84f6b";
+  ctx.beginPath(); ctx.arc(0, fy, e.r * 0.13, 0, Math.PI * 2); ctx.fill();
+  if (e.boss) outlinedText("👑", 0, -e.r * 1.5, e.r * 0.6, "#fff");
+  ctx.restore();
+  // HP 숫자 (전장에 들어온 뒤에만 표시)
+  const ty = e.y - e.r * (e.boss ? 1.9 : 1.75);
+  if (isFinite(e.hp) && ty > 76) outlinedText(String(Math.ceil(e.hp)), e.x, ty, e.boss ? 34 : 24, "#fff");
+}
+
+function drawUnit(x, y, tier, scale, alpha) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  ctx.globalAlpha = alpha;
+  roundRect(-34, -34, 68, 68, 14);
+  ctx.fillStyle = TIER_COLOR[tier - 1];
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.25)"; ctx.lineWidth = 3; ctx.stroke();
+  roundRect(-34, -34, 68, 30, 14);
+  ctx.fillStyle = "rgba(255,255,255,0.22)"; ctx.fill();
+  ctx.font = "38px serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(TIER_EMOJI[tier - 1], 0, -2);
+  // 등급 뱃지
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  roundRect(8, 14, 26, 20, 8); ctx.fill();
+  ctx.fillStyle = "#ffd93d";
+  ctx.font = "900 15px sans-serif";
+  ctx.fillText(tier, 21, 24);
+  ctx.restore();
+}
+
+function drawGrid() {
+  // 나무 판 배경
+  ctx.fillStyle = "#c98a3d";
+  ctx.fillRect(0, GRID_TOP - 8, W, H - GRID_TOP + 8);
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const x = c * CELL + 4, y = GRID_TOP + r * (CELL - 8) + 2;
+      roundRect(x, y, CELL - 8, CELL - 12, 10);
+      ctx.fillStyle = (r + c) % 2 === 0 ? "#e0a955" : "#d69c48";
+      ctx.fill();
+    }
+  }
+  // 유닛
+  for (let i = 0; i < grid.length; i++) {
+    const u = grid[i];
+    if (!u) continue;
+    if (drag && drag.idx === i) continue;
+    const c = cellCenter(i);
+    const s = 1 + Math.max(0, u.pop) * 0.25;
+    drawUnit(c.x, c.y - Math.max(0, u.recoil) * 5, u.tier, s, 1);
+  }
+  // 드래그 중 유닛
+  if (drag && grid[drag.idx]) {
+    const u = grid[drag.idx];
+    const to = slotAt({ x: drag.x, y: drag.y });
+    // 합성 가능 하이라이트
+    if (to >= 0 && to !== drag.idx && grid[to] && grid[to].tier === u.tier && u.tier < MAX_TIER) {
+      const c = cellCenter(to);
+      ctx.strokeStyle = "#ffd93d"; ctx.lineWidth = 5;
+      roundRect(c.x - 42, c.y - 42, 84, 84, 14); ctx.stroke();
+    }
+    drawUnit(drag.x, drag.y - 12, u.tier, 1.15, 0.9);
+  }
+}
+
+function drawHUD() {
+  // 상단 바
+  ctx.fillStyle = "rgba(40,55,20,0.85)";
+  ctx.fillRect(0, 0, W, 60);
+  outlinedText("💰 " + gold, 70, 30, 22, "#ffd93d", "rgba(0,0,0,0.6)", 4);
+  outlinedText("❤️ " + lives, 190, 30, 22, "#ff8f8f", "rgba(0,0,0,0.6)", 4);
+  outlinedText("웨이브 " + Math.max(wave, 1) + (wave > 0 && wave % 5 === 0 ? " 👑" : ""), 320, 30, 22, "#fff", "rgba(0,0,0,0.6)", 4);
+  // 사운드 버튼
+  ctx.font = "26px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(soundOn ? "🔊" : "🔇", BTN.sound.x + 21, BTN.sound.y + 21);
+
+  // 구매 버튼
+  const b = BTN.buy, afford = gold >= buyCost();
+  roundRect(b.x, b.y, b.w, b.h, 14);
+  ctx.fillStyle = afford ? "#8e44d9" : "#777";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.3)"; ctx.lineWidth = 3; ctx.stroke();
+  outlinedText("무기 구매  💰" + buyCost(), b.x + b.w / 2, b.y + b.h / 2, 21, "#fff", "rgba(0,0,0,0.5)", 4);
+
+  // 다음 웨이브 안내
+  if (!waveActive && state === "play") {
+    outlinedText("다음 웨이브까지 " + Math.ceil(waveDelay) + "초", W / 2, FIELD_TOP + 40, 22, "#fff");
+  }
+  // 조작 안내 (첫 웨이브 동안)
+  if (wave <= 1) {
+    outlinedText("같은 무기를 드래그해서 합치세요!", W / 2, GRID_TOP - 100, 20, "#fff");
+  }
+}
+
+function drawTitle() {
+  ctx.fillStyle = "#a8cc3e";
+  ctx.fillRect(0, 0, W, H);
+  const cs = 60;
+  ctx.fillStyle = "rgba(255,255,255,0.07)";
+  for (let y = 0; y < H / cs; y++)
+    for (let x = 0; x < W / cs; x++)
+      if ((x + y) % 2 === 0) ctx.fillRect(x * cs, y * cs, cs, cs);
+  // 떠다니는 슬라임 장식 (hp: NaN → HP 숫자 미표시)
+  for (let i = 0; i < 3; i++) {
+    drawEnemy({ x: 100 + i * 140, y: 190 + Math.sin(time * 1.5 + i * 2) * 12, r: 34, wob: time * 3 + i, hitT: 0, boss: false, flower: i === 1 ? "#ffb7d5" : "#fff", hp: NaN, maxHp: 1, speed: 0 });
+  }
+  outlinedText("슬라임", W / 2, 330, 64, "#fff", "rgba(60,80,20,0.9)", 12);
+  outlinedText("머지 디펜스", W / 2, 400, 64, "#ffd93d", "rgba(60,80,20,0.9)", 12);
+  drawUnit(W / 2 - 90, 500, 1, 1, 1);
+  outlinedText("+", W / 2 - 45, 500, 30, "#fff");
+  drawUnit(W / 2, 500, 1, 1, 1);
+  outlinedText("=", W / 2 + 45, 500, 30, "#fff");
+  drawUnit(W / 2 + 90, 500, 2, 1.1, 1);
+  const pulse = 1 + Math.sin(time * 4) * 0.05;
+  outlinedText("화면을 터치해서 시작!", W / 2, 620 + Math.sin(time * 4) * 3, 28 * pulse, "#fff");
+  if (best > 0) outlinedText("🏆 최고 기록: 웨이브 " + best, W / 2, 700, 22, "#ffd93d");
+}
+function drawOver() {
+  ctx.fillStyle = "rgba(20,25,10,0.82)";
+  ctx.fillRect(0, 0, W, H);
+  outlinedText("게임 오버", W / 2, 300, 56, "#ff6b6b", "rgba(0,0,0,0.8)", 10);
+  outlinedText("도달 웨이브: " + wave, W / 2, 390, 30, "#fff");
+  outlinedText("처치한 슬라임: " + kills + "마리", W / 2, 440, 24, "#fff");
+  if (wave >= best && best > 0) outlinedText("🏆 신기록!", W / 2, 500, 28, "#ffd93d");
+  else if (best > 0) outlinedText("최고 기록: 웨이브 " + best, W / 2, 500, 22, "#ffd93d");
+  outlinedText("화면을 터치해서 다시 시작", W / 2, 590 + Math.sin(time * 4) * 3, 24, "#fff");
+}
+
+function draw() {
+  ctx.save();
+  if (shakeT > 0) ctx.translate((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10);
+
+  if (state === "title") { drawTitle(); ctx.restore(); return; }
+
+  drawField();
+  // 투사체
+  for (const p of projectiles) {
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    const t = p.target;
+    if (t) ctx.rotate(Math.atan2(t.y - p.y, t.x - p.x) + Math.PI / 2);
+    ctx.fillStyle = TIER_COLOR[p.tier - 1];
+    ctx.beginPath();
+    ctx.moveTo(0, -14); ctx.lineTo(5, 8); ctx.lineTo(-5, 8);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.7)"; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.restore();
+  }
+  // 적 (아래쪽이 위에 그려지도록 정렬)
+  const sorted = [...enemies].sort((a, b) => a.y - b.y);
+  for (const e of sorted) drawEnemy(e);
+  // 파티클
+  for (const p of particles) {
+    ctx.globalAlpha = 1 - p.t / p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  drawGrid();
+  drawHUD();
+
+  // 떠오르는 텍스트
+  for (const f of floats) {
+    const k = f.t / f.life;
+    ctx.globalAlpha = 1 - k * k;
+    outlinedText(f.txt, f.x, f.y - k * 46, f.size, f.color);
+    ctx.globalAlpha = 1;
+  }
+
+  // 피격 플래시
+  if (flashT > 0) {
+    ctx.fillStyle = "rgba(255,50,50," + flashT * 0.5 + ")";
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  if (state === "over") drawOver();
+  ctx.restore();
+}
+
+// ---------- 메인 루프 ----------
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+reset();
+state = "title";
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
