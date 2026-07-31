@@ -95,7 +95,7 @@ let state = "title";   // title | play | over
 let grid, enemies, projectiles, particles, floats, effects;
 let gold, lives, wave, buyCount, kills, upg, skills;
 let timeScale = 1;
-let spawnQueue, spawnTimer, waveDelay, waveActive;
+let spawnQueue, spawnTimer, waveDelay, waveActive, unitTimer;
 let shakeT = 0, flashT = 0, time = 0;
 let drag = null;       // {idx, x, y}
 let best = +(localStorage.getItem("smd_best") || 0);
@@ -106,12 +106,14 @@ function reset() {
   gold = 150; lives = 10; wave = 0; buyCount = 0; kills = 0;
   upg = { dmg: 0, rate: 0, gold: 0 };
   skills = { meteor: 0, freeze: 0 };
-  spawnQueue = 0; spawnTimer = 0; waveDelay = 2; waveActive = false;
+  spawnQueue = 0; spawnTimer = 0; waveDelay = 2; waveActive = false; unitTimer = 0;
   shakeT = 0; flashT = 0;
   addUnit(1); addUnit(1);
 }
 
 function buyCost() { return Math.floor(30 * Math.pow(1.13, buyCount)); }
+// 자동 무기 생성 주기 (웨이브가 오르면 조금씩 빨라짐)
+function unitInterval() { return Math.max(2.0, 3.2 - wave * 0.04); }
 
 // ---------- 업그레이드 ----------
 function upgCost(k) {
@@ -494,6 +496,20 @@ function update(dt) {
   // 스킬 쿨다운
   skills.meteor = Math.max(0, skills.meteor - dt);
   skills.freeze = Math.max(0, skills.freeze - dt);
+
+  // 무기 자동 생성 (빈 칸이 없으면 게이지 꽉 찬 채 대기)
+  unitTimer = Math.min(unitTimer + dt, unitInterval());
+  if (unitTimer >= unitInterval() && grid.some(s => !s)) {
+    const t = rollBuyTier();
+    addUnit(t);
+    unitTimer = 0;
+    sfx.buy();
+    if (t >= 6) {
+      floatText(W / 2, H / 2 - 100, "🎊 초대박! " + t + "등급 " + TIER_NAME[t - 1] + "!! 🎊", "#ffd93d", 30, 2);
+      shakeT = 0.3;
+      sfx.wave();
+    }
+  }
 
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
@@ -935,7 +951,18 @@ function drawHUD() {
   ctx.fillStyle = afford ? "#8e44d9" : "#777";
   ctx.fill();
   ctx.strokeStyle = "rgba(0,0,0,0.3)"; ctx.lineWidth = 3; ctx.stroke();
-  outlinedText("무기 구매 💰" + buyCost(), b.x + b.w / 2, b.y + b.h / 2, 19, "#fff", "rgba(0,0,0,0.5)", 4);
+  outlinedText("즉시 뽑기 💰" + buyCost(), b.x + b.w / 2, b.y + b.h / 2, 19, "#fff", "rgba(0,0,0,0.5)", 4);
+
+  // 다음 무기 자동 생성 게이지
+  const gy = GRID_TOP - 80, full = grid.every(s => s);
+  roundRect(12, gy, W - 24, 9, 5);
+  ctx.fillStyle = "rgba(0,0,0,0.35)"; ctx.fill();
+  const prog = Math.min(1, unitTimer / unitInterval());
+  if (prog > 0.03) {
+    roundRect(12, gy, (W - 24) * prog, 9, 5);
+    ctx.fillStyle = full ? "#999" : "#7dffb2"; ctx.fill();
+  }
+  outlinedText(full ? "칸이 가득 참! 합성하세요" : "다음 무기 자동 생성 중...", W / 2, gy - 12, 15, full ? "#ffd93d" : "#fff", "rgba(0,0,0,0.5)", 3);
 
   // 업그레이드 버튼 3종
   for (const ub of BTN.upg) {
@@ -962,8 +989,8 @@ function drawHUD() {
   }
   // 조작 안내 (첫 웨이브 동안)
   if (wave <= 1) {
-    outlinedText("같은 무기를 드래그해서 합치세요!", W / 2, GRID_TOP - 122, 20, "#fff");
-    outlinedText("무기는 자기 세로줄 앞의 적만 공격해요!", W / 2, GRID_TOP - 94, 18, "#ffd93d");
+    outlinedText("같은 무기를 드래그해서 합치세요!", W / 2 - 30, GRID_TOP - 154, 20, "#fff");
+    outlinedText("무기는 자기 세로줄 앞의 적만 공격해요!", W / 2 - 30, GRID_TOP - 126, 18, "#ffd93d");
   }
 }
 
