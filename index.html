@@ -92,7 +92,7 @@ const sfx = {
 
 // ---------- 게임 상태 ----------
 let state = "title";   // title | play | over
-let grid, enemies, projectiles, particles, floats;
+let grid, enemies, projectiles, particles, floats, effects;
 let gold, lives, wave, buyCount, kills;
 let spawnQueue, spawnTimer, waveDelay, waveActive;
 let shakeT = 0, flashT = 0, time = 0;
@@ -101,7 +101,7 @@ let best = +(localStorage.getItem("smd_best") || 0);
 
 function reset() {
   grid = Array(ROWS * COLS).fill(null);
-  enemies = []; projectiles = []; particles = []; floats = [];
+  enemies = []; projectiles = []; particles = []; floats = []; effects = [];
   gold = 120; lives = 10; wave = 0; buyCount = 0; kills = 0;
   spawnQueue = 0; spawnTimer = 0; waveDelay = 2; waveActive = false;
   shakeT = 0; flashT = 0;
@@ -119,38 +119,142 @@ function addUnit(tier) {
   return true;
 }
 
-// ---------- 유닛 능력치 ----------
-function unitDamage(t) { return Math.round(10 * Math.pow(2.5, t - 1)); }
-function unitRate(t)   { return 1.0 + t * 0.06; }   // 초당 공격 횟수
+// ---------- 유닛 능력치: 무기마다 고유한 공격 방식 ----------
+// type: basic(단발) dagger(연속 찌르기) pierce(관통 화살) boomerang(왕복 부메랑)
+//       spread(다중 타겟) slash(회전 대검+소범위) homing(유도 마법탄+폭발)
+//       fire(화염 폭발+화상) chain(체인 라이트닝) star(별똥별 낙하)
+const ATTACK = [
+  { type: "basic",     dmg: 10,    rate: 1.0,  speed: 620 },
+  { type: "dagger",    dmg: 11,    rate: 2.3,  speed: 850 },
+  { type: "pierce",    dmg: 52,    rate: 1.15, speed: 950 },
+  { type: "boomerang", dmg: 58,    rate: 0.9,  speed: 540 },
+  { type: "spread",    dmg: 125,   rate: 1.15, speed: 700, count: 3 },
+  { type: "slash",     dmg: 900,   rate: 1.0,  speed: 640, aoe: 62 },
+  { type: "homing",    dmg: 2300,  rate: 1.0,  speed: 560, aoe: 72 },
+  { type: "fire",      dmg: 5200,  rate: 0.95, speed: 600, aoe: 105, burn: 0.4 },
+  { type: "chain",     dmg: 13500, rate: 1.0,  chains: 4 },
+  { type: "star",      dmg: 22000, rate: 0.9,  speed: 780, count: 3, aoe: 88 },
+];
 
 // ---------- 웨이브 ----------
 function startWave() {
   wave++;
   waveActive = true;
-  spawnQueue = 7 + Math.floor(wave * 1.3);
+  spawnQueue = 8 + Math.floor(wave * 1.7);
   spawnTimer = 0.5;
   sfx.wave();
   floatText(W / 2, H / 2 - 120, wave % 5 === 0 ? "👑 보스 웨이브 " + wave : "웨이브 " + wave, "#fff", 30, 1.4);
 }
-function enemyBaseHp() { return 22 * Math.pow(1.27, wave - 1); }
+function enemyBaseHp() { return 26 * Math.pow(1.33, wave - 1); }
 
 function spawnEnemy() {
   const isBoss = (wave % 5 === 0) && spawnQueue === 1; // 5의 배수 웨이브 마지막은 보스
-  const hp = Math.round(enemyBaseHp() * (isBoss ? 14 : 0.85 + Math.random() * 0.4));
+  const isFast = !isBoss && wave >= 8 && Math.random() < 0.25; // 빠른 돌진형
+  let hp = enemyBaseHp() * (0.85 + Math.random() * 0.4);
+  if (isBoss) hp *= 17;
+  if (isFast) hp *= 0.55;
+  hp = Math.round(hp);
   enemies.push({
     x: 60 + Math.random() * (W - 120),
     y: FIELD_TOP - 40,
     hp, maxHp: hp,
-    speed: (isBoss ? 16 : 26 + Math.random() * 14) * Math.pow(1.012, wave),
-    r: isBoss ? 46 : 26 + Math.random() * 6,
-    boss: isBoss,
+    speed: (isBoss ? 18 : (isFast ? 55 : 28) + Math.random() * 16) * Math.pow(1.02, wave),
+    r: isBoss ? 46 : (isFast ? 20 : 26 + Math.random() * 6),
+    boss: isBoss, fast: isFast,
     wob: Math.random() * Math.PI * 2,
-    hitT: 0,
-    flower: Math.random() < 0.5 ? "#ffb7d5" : "#fff",
+    hitT: 0, burn: null,
+    flower: isFast ? "#ff6b6b" : (Math.random() < 0.5 ? "#ffb7d5" : "#fff"),
   });
 }
 
 function killGold(e) { return Math.max(2, Math.floor((4 + wave * 1.6) * (e.boss ? 10 : 1))); }
+
+// ---------- 데미지 & 처치 (모든 공격이 공유) ----------
+function killEnemy(e) {
+  const gi = enemies.indexOf(e);
+  if (gi < 0) return;
+  enemies.splice(gi, 1);
+  const g = killGold(e);
+  gold += g; kills++;
+  floatText(e.x, e.y - e.r - 10, "+" + g, "#ffd93d", 18);
+  burst(e.x, e.y, "#c9d94f", e.boss ? 40 : 14, e.boss ? 220 : 130);
+  sfx.kill();
+}
+function damageEnemy(e, dmg, silent) {
+  if (e.hp <= 0 || enemies.indexOf(e) === -1) return;
+  e.hp -= dmg;
+  if (!silent) e.hitT = 0.12;
+  if (e.hp <= 0) killEnemy(e);
+}
+// 범위 폭발 데미지
+function aoeDamage(x, y, r, dmg, tier, burn) {
+  effects.push({ type: "ring", x, y, maxR: r, life: 0.3, t: 0, color: TIER_COLOR[tier - 1] });
+  burst(x, y, TIER_COLOR[tier - 1], 14, 160);
+  for (const e of [...enemies]) {
+    if (Math.hypot(e.x - x, e.y - y) <= r + e.r) {
+      if (burn) e.burn = { dps: dmg * burn / 3, t: 3 };
+      damageEnemy(e, dmg);
+    }
+  }
+}
+// 체인 라이트닝: 가장 앞의 적에서 근처 적으로 튕김
+function chainLightning(c, first, atk) {
+  const pts = [{ x: c.x, y: c.y - 20 }];
+  const hit = new Set();
+  let cur = first, dmg = atk.dmg;
+  for (let i = 0; i < atk.chains && cur; i++) {
+    // 번개가 지그재그로 보이도록 중간점 추가
+    const prev = pts[pts.length - 1];
+    for (let k = 1; k <= 3; k++) {
+      pts.push({ x: prev.x + (cur.x - prev.x) * k / 4 + (Math.random() - 0.5) * 26, y: prev.y + (cur.y - prev.y) * k / 4 + (Math.random() - 0.5) * 26 });
+    }
+    pts.push({ x: cur.x, y: cur.y });
+    hit.add(cur);
+    burst(cur.x, cur.y, "#ffe97a", 8, 120);
+    damageEnemy(cur, Math.round(dmg));
+    dmg *= 0.72;
+    let next = null, nd = 150;
+    for (const e of enemies) {
+      if (hit.has(e) || e.y < FIELD_TOP - 10) continue;
+      const d = Math.hypot(e.x - cur.x, e.y - cur.y);
+      if (d < nd) { nd = d; next = e; }
+    }
+    cur = next;
+  }
+  effects.push({ type: "bolt", pts, life: 0.16, t: 0 });
+}
+// 방어선에 가까운 순서로 최대 n마리
+function frontEnemies(n) {
+  return enemies.filter(e => e.y > FIELD_TOP - 10).sort((a, b) => b.y - a.y).slice(0, n);
+}
+// 무기 발사: 종류별로 완전히 다른 공격
+function fireWeapon(tier, c, targets) {
+  const atk = ATTACK[tier - 1], main = targets[0];
+  sfx.shoot();
+  switch (atk.type) {
+    case "chain":
+      chainLightning(c, main, atk);
+      break;
+    case "star": // 별똥별: 하늘에서 낙하 후 폭발
+      for (const tg of targets)
+        projectiles.push({ kind: "star", x: tg.x + (Math.random() - 0.5) * 80, y: tg.y - 340, tx: tg.x, ty: tg.y, speed: atk.speed, dmg: atk.dmg, tier, aoe: atk.aoe, rot: Math.random() * 6 });
+      break;
+    case "pierce": { // 관통 화살: 직선으로 끝까지
+      const dx = main.x - c.x, dy = main.y - (c.y - 20), d = Math.hypot(dx, dy) || 1;
+      projectiles.push({ kind: "pierce", x: c.x, y: c.y - 20, vx: dx / d * atk.speed, vy: dy / d * atk.speed, dmg: atk.dmg, tier, hitSet: new Set(), rot: Math.atan2(dy, dx) + Math.PI / 2 });
+      break;
+    }
+    case "boomerang": // 부메랑: 갔다가 돌아오며 경로의 적 모두 타격
+      projectiles.push({ kind: "boom", x: c.x, y: c.y - 20, ox: c.x, oy: c.y - 20, tx: main.x, ty: main.y - 30, phase: 0, speed: atk.speed, dmg: atk.dmg, tier, hitSet: new Set(), rot: 0 });
+      break;
+    case "spread": // 삼지창: 서로 다른 적 3마리 동시 공격
+      for (const tg of targets)
+        projectiles.push({ kind: "homing", sub: "trident", target: tg, x: c.x, y: c.y - 20, speed: atk.speed, dmg: atk.dmg, tier, aoe: 0, burn: 0, rot: 0 });
+      break;
+    default: // basic / dagger / slash / homing / fire
+      projectiles.push({ kind: "homing", sub: atk.type, target: main, x: c.x, y: c.y - 20, speed: atk.speed, dmg: atk.dmg, tier, aoe: atk.aoe || 0, burn: atk.burn || 0, rot: 0, spin: 0 });
+  }
+}
 
 // ---------- 이펙트 ----------
 function floatText(x, y, txt, color, size, life) {
@@ -251,7 +355,7 @@ function update(dt) {
       if (spawnTimer <= 0) {
         spawnEnemy();
         spawnQueue--;
-        spawnTimer = Math.max(0.35, 1.5 - wave * 0.04) * (0.7 + Math.random() * 0.6);
+        spawnTimer = Math.max(0.28, 1.35 - wave * 0.05) * (0.7 + Math.random() * 0.6);
       }
     } else if (enemies.length === 0) {
       waveActive = false;
@@ -270,6 +374,13 @@ function update(dt) {
     e.x += Math.sin(e.wob) * 12 * dt;
     e.x = Math.max(e.r, Math.min(W - e.r, e.x));
     if (e.hitT > 0) e.hitT -= dt;
+    // 화상 지속 피해
+    if (e.burn && e.burn.t > 0) {
+      e.burn.t -= dt;
+      if (Math.random() < dt * 12) particles.push({ x: e.x + (Math.random() - 0.5) * e.r, y: e.y - e.r * 0.5, vx: (Math.random() - 0.5) * 30, vy: -60 - Math.random() * 40, life: 0.4, t: 0, color: Math.random() < 0.5 ? "#ff7b2e" : "#ffd93d", r: 3 + Math.random() * 3 });
+      damageEnemy(e, e.burn.dps * dt, true);
+      if (enemies.indexOf(e) === -1) continue;
+    }
     if (e.y > GRID_TOP - e.r - 20) {   // 방어선 도달
       enemies.splice(i, 1);
       lives -= e.boss ? 3 : 1;
@@ -292,45 +403,84 @@ function update(dt) {
     if (u.recoil > 0) u.recoil -= dt * 6;
     u.cd -= dt;
     if (u.cd <= 0 && enemies.length) {
-      // 방어선에 가장 가까운(가장 아래) 적을 노린다
-      let target = null;
-      for (const e of enemies) if (e.y > FIELD_TOP - 10 && (!target || e.y > target.y)) target = e;
-      if (target) {
-        const c = cellCenter(i);
-        projectiles.push({ x: c.x, y: c.y - 20, target, speed: 620, dmg: unitDamage(u.tier), tier: u.tier });
-        u.cd = 1 / unitRate(u.tier);
+      const atk = ATTACK[u.tier - 1];
+      const targets = frontEnemies(atk.count || 1);
+      if (targets.length) {
+        fireWeapon(u.tier, cellCenter(i), targets);
+        u.cd = 1 / atk.rate;
         u.recoil = 1;
-        sfx.shoot();
       }
     }
   }
 
-  // 투사체
+  // 투사체 (무기 종류별로 다르게 움직임)
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
-    const t = p.target;
-    if (!t || t.hp <= 0 || enemies.indexOf(t) === -1) { projectiles.splice(i, 1); continue; }
-    const dx = t.x - p.x, dy = t.y - p.y;
-    const d = Math.hypot(dx, dy);
-    if (d < t.r + 8) {
-      t.hp -= p.dmg;
-      t.hitT = 0.12;
-      burst(p.x, p.y, TIER_COLOR[p.tier - 1], 5, 90);
-      sfx.hit();
-      projectiles.splice(i, 1);
-      if (t.hp <= 0) {
-        const gi = enemies.indexOf(t);
-        if (gi >= 0) enemies.splice(gi, 1);
-        const g = killGold(t);
-        gold += g; kills++;
-        floatText(t.x, t.y - t.r - 10, "+" + g, "#ffd93d", 18);
-        burst(t.x, t.y, "#c9d94f", t.boss ? 40 : 14, t.boss ? 220 : 130);
-        sfx.kill();
+    let remove = false;
+
+    if (p.kind === "homing") {
+      // 유도형: basic / dagger / trident / slash / homing / fire
+      const t = p.target;
+      if (!t || t.hp <= 0 || enemies.indexOf(t) === -1) { remove = true; }
+      else {
+        const dx = t.x - p.x, dy = t.y - p.y, d = Math.hypot(dx, dy) || 1;
+        p.rot = Math.atan2(dy, dx) + Math.PI / 2;
+        if (p.sub === "slash") p.spin += dt * 18;
+        // 마법탄/화염은 꼬리 파티클
+        if ((p.sub === "homing" || p.sub === "fire") && Math.random() < dt * 40)
+          particles.push({ x: p.x, y: p.y, vx: (Math.random() - 0.5) * 40, vy: (Math.random() - 0.5) * 40, life: 0.3, t: 0, color: p.sub === "fire" ? "#ff9b4f" : "#d9a0ff", r: 3 });
+        if (d < t.r + 10) {
+          if (p.aoe) aoeDamage(t.x, t.y, p.aoe, p.dmg, p.tier, p.burn);
+          else { damageEnemy(t, p.dmg); burst(p.x, p.y, TIER_COLOR[p.tier - 1], 5, 90); }
+          sfx.hit();
+          remove = true;
+        } else { p.x += dx / d * p.speed * dt; p.y += dy / d * p.speed * dt; }
       }
-    } else {
-      p.x += dx / d * p.speed * dt;
-      p.y += dy / d * p.speed * dt;
+    } else if (p.kind === "pierce") {
+      // 관통 화살: 직선 이동, 스치는 모든 적 타격
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      for (const e of [...enemies]) {
+        if (!p.hitSet.has(e) && Math.hypot(e.x - p.x, e.y - p.y) < e.r + 10) {
+          p.hitSet.add(e);
+          damageEnemy(e, p.dmg);
+          burst(p.x, p.y, TIER_COLOR[p.tier - 1], 4, 80);
+          sfx.hit();
+        }
+      }
+      if (p.y < FIELD_TOP - 60 || p.x < -40 || p.x > W + 40 || p.y > H + 40) remove = true;
+    } else if (p.kind === "boom") {
+      // 부메랑: 목표 지점까지 갔다가 되돌아옴, 경로의 적 모두 타격
+      p.rot += dt * 16;
+      const tx = p.phase === 0 ? p.tx : p.ox, ty = p.phase === 0 ? p.ty : p.oy;
+      const dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy);
+      if (d < 16) {
+        if (p.phase === 0) { p.phase = 1; p.hitSet.clear(); } // 돌아올 때 다시 타격 가능
+        else remove = true;
+      } else { p.x += dx / d * p.speed * dt; p.y += dy / d * p.speed * dt; }
+      for (const e of [...enemies]) {
+        if (!p.hitSet.has(e) && Math.hypot(e.x - p.x, e.y - p.y) < e.r + 16) {
+          p.hitSet.add(e);
+          damageEnemy(e, p.dmg);
+          sfx.hit();
+        }
+      }
+    } else if (p.kind === "star") {
+      // 별똥별: 낙하 후 범위 폭발
+      p.rot += dt * 8;
+      if (Math.random() < dt * 30)
+        particles.push({ x: p.x, y: p.y, vx: (Math.random() - 0.5) * 30, vy: -40, life: 0.35, t: 0, color: "#ffe97a", r: 3 });
+      const dx = p.tx - p.x, dy = p.ty - p.y, d = Math.hypot(dx, dy);
+      if (d < 18) { aoeDamage(p.tx, p.ty, p.aoe, p.dmg, p.tier); sfx.hit(); remove = true; }
+      else { p.x += dx / d * p.speed * dt; p.y += dy / d * p.speed * dt; }
     }
+
+    if (remove) projectiles.splice(i, 1);
+  }
+
+  // 지속 이펙트 (폭발 링, 번개)
+  for (let i = effects.length - 1; i >= 0; i--) {
+    effects[i].t += dt;
+    if (effects[i].t > effects[i].life) effects.splice(i, 1);
   }
 
   // 파티클 & 텍스트
@@ -440,6 +590,104 @@ function drawEnemy(e) {
   // HP 숫자 (전장에 들어온 뒤에만 표시)
   const ty = e.y - e.r * (e.boss ? 1.9 : 1.75);
   if (isFinite(e.hp) && ty > 76) outlinedText(String(Math.ceil(e.hp)), e.x, ty, e.boss ? 34 : 24, "#fff");
+}
+
+// ---------- 무기별 투사체 그리기 ----------
+function star5(r) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = i * Math.PI / 5 - Math.PI / 2, rr = i % 2 === 0 ? r : r * 0.45;
+    if (i === 0) ctx.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+    else ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+  }
+  ctx.closePath();
+}
+function drawProjectile(p) {
+  const col = TIER_COLOR[p.tier - 1];
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  const sub = p.sub || p.kind;
+
+  if (sub === "dagger") {                      // 단검: 빠른 은빛 찌르기
+    ctx.rotate(p.rot);
+    ctx.fillStyle = "#e8e8f0";
+    ctx.beginPath(); ctx.moveTo(0, -13); ctx.lineTo(3.5, 4); ctx.lineTo(-3.5, 4); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = col; ctx.fillRect(-4.5, 4, 9, 4);
+  } else if (p.kind === "pierce") {            // 관통 화살
+    ctx.rotate(p.rot);
+    ctx.strokeStyle = "#b07840"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(0, 18); ctx.lineTo(0, -12); ctx.stroke();
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.moveTo(0, -20); ctx.lineTo(6, -8); ctx.lineTo(-6, -8); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-5, 18); ctx.lineTo(0, 12); ctx.lineTo(5, 18); ctx.stroke();
+  } else if (p.kind === "boom") {              // 회전 부메랑
+    ctx.rotate(p.rot);
+    ctx.strokeStyle = col; ctx.lineWidth = 8; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(-14, 6); ctx.lineTo(0, -8); ctx.lineTo(14, 6); ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,0.6)"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(-14, 6); ctx.lineTo(0, -8); ctx.lineTo(14, 6); ctx.stroke();
+  } else if (sub === "trident") {              // 삼지창: 세 갈래 창
+    ctx.rotate(p.rot);
+    ctx.fillStyle = col;
+    for (let k = -1; k <= 1; k++) {
+      ctx.beginPath(); ctx.moveTo(k * 7, -14); ctx.lineTo(k * 7 + 3, -2); ctx.lineTo(k * 7 - 3, -2); ctx.closePath(); ctx.fill();
+    }
+    ctx.fillRect(-8, -3, 16, 3);
+    ctx.fillRect(-1.5, -3, 3, 14);
+  } else if (sub === "slash") {                // 대검: 빙글빙글 도는 큰 검
+    ctx.rotate(p.spin || 0);
+    ctx.fillStyle = "#dfe4ee";
+    ctx.beginPath(); ctx.moveTo(0, -24); ctx.lineTo(6, -4); ctx.lineTo(6, 8); ctx.lineTo(-6, 8); ctx.lineTo(-6, -4); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = col; ctx.fillRect(-11, 8, 22, 5);
+    ctx.fillRect(-2.5, 13, 5, 8);
+    ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, 26, 0, Math.PI * 1.4); ctx.stroke();
+  } else if (sub === "homing") {               // 마법탄: 빛나는 구슬
+    const g = ctx.createRadialGradient(0, 0, 1, 0, 0, 12);
+    g.addColorStop(0, "#fff"); g.addColorStop(0.4, "#e0b0ff"); g.addColorStop(1, "rgba(176,79,217,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
+  } else if (sub === "fire") {                 // 화염구
+    const g = ctx.createRadialGradient(0, 0, 1, 0, 0, 14);
+    g.addColorStop(0, "#fff3b0"); g.addColorStop(0.4, "#ff9b4f"); g.addColorStop(1, "rgba(255,80,30,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, 14, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#ffd93d";
+    ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+  } else if (p.kind === "star") {              // 별똥별
+    ctx.rotate(p.rot);
+    ctx.fillStyle = "#ffe97a"; star5(14); ctx.fill();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; star5(14); ctx.stroke();
+  } else {                                     // 기본 (곡괭이)
+    ctx.rotate(p.rot);
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.moveTo(0, -14); ctx.lineTo(5, 8); ctx.lineTo(-5, 8); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.7)"; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawEffect(fx) {
+  const k = fx.t / fx.life;
+  if (fx.type === "ring") {
+    ctx.globalAlpha = 1 - k;
+    ctx.strokeStyle = fx.color; ctx.lineWidth = 6 * (1 - k) + 2;
+    ctx.beginPath(); ctx.arc(fx.x, fx.y, fx.maxR * (0.3 + k * 0.7), 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = (1 - k) * 0.25;
+    ctx.fillStyle = fx.color;
+    ctx.beginPath(); ctx.arc(fx.x, fx.y, fx.maxR * (0.3 + k * 0.7), 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  } else if (fx.type === "bolt") {
+    ctx.globalAlpha = 1 - k;
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.strokeStyle = "#ffe97a"; ctx.lineWidth = 7;
+    ctx.beginPath();
+    fx.pts.forEach((pt, i) => i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y));
+    ctx.stroke();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
 }
 
 function drawUnit(x, y, tier, scale, alpha) {
@@ -570,22 +818,11 @@ function draw() {
   if (state === "title") { drawTitle(); ctx.restore(); return; }
 
   drawField();
-  // 투사체
-  for (const p of projectiles) {
-    ctx.save();
-    ctx.translate(p.x, p.y);
-    const t = p.target;
-    if (t) ctx.rotate(Math.atan2(t.y - p.y, t.x - p.x) + Math.PI / 2);
-    ctx.fillStyle = TIER_COLOR[p.tier - 1];
-    ctx.beginPath();
-    ctx.moveTo(0, -14); ctx.lineTo(5, 8); ctx.lineTo(-5, 8);
-    ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = "rgba(255,255,255,0.7)"; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.restore();
-  }
   // 적 (아래쪽이 위에 그려지도록 정렬)
   const sorted = [...enemies].sort((a, b) => a.y - b.y);
   for (const e of sorted) drawEnemy(e);
+  // 투사체
+  for (const p of projectiles) drawProjectile(p);
   // 파티클
   for (const p of particles) {
     ctx.globalAlpha = 1 - p.t / p.life;
@@ -593,6 +830,8 @@ function draw() {
     ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
   }
   ctx.globalAlpha = 1;
+  // 폭발 링 & 번개
+  for (const fx of effects) drawEffect(fx);
 
   drawGrid();
   drawHUD();
