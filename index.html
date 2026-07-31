@@ -93,7 +93,8 @@ const sfx = {
 // ---------- 게임 상태 ----------
 let state = "title";   // title | play | over
 let grid, enemies, projectiles, particles, floats, effects;
-let gold, lives, wave, buyCount, kills, upg;
+let gold, lives, wave, buyCount, kills, upg, skills;
+let timeScale = 1;
 let spawnQueue, spawnTimer, waveDelay, waveActive;
 let shakeT = 0, flashT = 0, time = 0;
 let drag = null;       // {idx, x, y}
@@ -104,6 +105,7 @@ function reset() {
   enemies = []; projectiles = []; particles = []; floats = []; effects = [];
   gold = 150; lives = 10; wave = 0; buyCount = 0; kills = 0;
   upg = { dmg: 0, rate: 0, gold: 0 };
+  skills = { meteor: 0, freeze: 0 };
   spawnQueue = 0; spawnTimer = 0; waveDelay = 2; waveActive = false;
   shakeT = 0; flashT = 0;
   addUnit(1); addUnit(1);
@@ -185,25 +187,29 @@ function enemyBaseHp() { return 24 * Math.pow(1.29, wave - 1); }
 
 function spawnEnemy() {
   const isBoss = (wave % 5 === 0) && spawnQueue === 1; // 5의 배수 웨이브 마지막은 보스
-  const isFast = !isBoss && wave >= 8 && Math.random() < 0.18; // 빠른 돌진형
+  const roll = Math.random();
+  const isFast  = !isBoss && wave >= 8 && roll < 0.18;                     // 빠른 돌진형 (빨간 꽃)
+  const isTank  = !isBoss && wave >= 6 && roll >= 0.18 && roll < 0.30;     // 탱커 (파란 꽃)
+  const isSplit = !isBoss && wave >= 10 && roll >= 0.30 && roll < 0.42;    // 분열형 (초록 꽃)
   let hp = enemyBaseHp() * (0.85 + Math.random() * 0.4);
   if (isBoss) hp *= 15;
   if (isFast) hp *= 0.55;
+  if (isTank) hp *= 2.6;
   hp = Math.round(hp);
   enemies.push({
     x: 60 + Math.random() * (W - 120),
     y: FIELD_TOP - 40,
     hp, maxHp: hp,
-    speed: (isBoss ? 17 : (isFast ? 48 : 27) + Math.random() * 15) * Math.pow(1.015, wave),
-    r: isBoss ? 46 : (isFast ? 20 : 26 + Math.random() * 6),
-    boss: isBoss, fast: isFast,
+    speed: (isBoss ? 17 : (isFast ? 48 : 27) + Math.random() * 15) * (isTank ? 0.55 : 1) * Math.pow(1.015, wave),
+    r: isBoss ? 46 : (isFast ? 20 : (isTank ? 34 : 26 + Math.random() * 6)),
+    boss: isBoss, fast: isFast, tank: isTank, split: isSplit,
     wob: Math.random() * Math.PI * 2,
-    hitT: 0, burn: null,
-    flower: isFast ? "#ff6b6b" : (Math.random() < 0.5 ? "#ffb7d5" : "#fff"),
+    hitT: 0, burn: null, frozen: 0,
+    flower: isFast ? "#ff6b6b" : isTank ? "#7ba8ff" : isSplit ? "#8fd14f" : (Math.random() < 0.5 ? "#ffb7d5" : "#fff"),
   });
 }
 
-function killGold(e) { return Math.max(2, Math.floor((5 + wave * 2) * (e.boss ? 10 : 1) * goldMult())); }
+function killGold(e) { return Math.max(2, Math.floor((5 + wave * 2) * (e.boss ? 10 : e.mini ? 0.5 : 1) * goldMult())); }
 
 // ---------- 데미지 & 처치 (모든 공격이 공유) ----------
 function killEnemy(e) {
@@ -215,6 +221,20 @@ function killEnemy(e) {
   floatText(e.x, e.y - e.r - 10, "+" + g, "#ffd93d", 18);
   burst(e.x, e.y, "#c9d94f", e.boss ? 40 : 14, e.boss ? 220 : 130);
   sfx.kill();
+  // 분열형: 죽으면 미니 슬라임 2마리로 쪼개짐
+  if (e.split) {
+    for (let k = -1; k <= 1; k += 2) {
+      const mhp = Math.max(1, Math.round(e.maxHp * 0.35));
+      enemies.push({
+        x: Math.max(20, Math.min(W - 20, e.x + k * 20)), y: e.y,
+        hp: mhp, maxHp: mhp,
+        speed: e.speed * 1.35, r: Math.max(14, e.r * 0.68),
+        boss: false, fast: false, tank: false, split: false, mini: true,
+        wob: Math.random() * Math.PI * 2, hitT: 0, burn: null, frozen: 0,
+        flower: "#8fd14f",
+      });
+    }
+  }
 }
 function damageEnemy(e, dmg, silent) {
   if (e.hp <= 0 || enemies.indexOf(e) === -1) return;
@@ -313,7 +333,33 @@ const BTN = {
     { key: "gold", x: 384, y: GRID_TOP - 66, w: 84, h: 54, icon: "💰", label: "골드",   pct: "+20%" },
   ],
   sound: { x: W - 54, y: 14, w: 42, h: 42 },
+  speed: { x: W - 104, y: 14, w: 42, h: 42 },
 };
+const SKILL_BTNS = [
+  { key: "meteor", x: W - 46, y: GRID_TOP - 122, r: 28, icon: "☄️", max: 30 },
+  { key: "freeze", x: W - 46, y: GRID_TOP - 192, r: 28, icon: "❄️", max: 25 },
+];
+function useSkill(k) {
+  if (skills[k] > 0) { sfx.error(); return; }
+  if (k === "meteor") {
+    if (!enemies.length) { sfx.error(); return; } // 적 없을 때 낭비 방지
+    skills.meteor = 30;
+    const dmg = Math.round(enemyBaseHp() * 2.5); // 웨이브에 비례한 위력
+    for (let i = 0; i < 6; i++) {
+      const tg = enemies[Math.floor(Math.random() * enemies.length)];
+      projectiles.push({ kind: "star", x: tg.x + (Math.random() - 0.5) * 120, y: tg.y - 380, tx: tg.x + (Math.random() - 0.5) * 40, ty: tg.y, speed: 900, dmg, tier: 8, aoe: 95, rot: Math.random() * 6 });
+    }
+    floatText(W / 2, H / 2 - 140, "☄️ 메테오!", "#ff9b4f", 30, 1.2);
+    shakeT = 0.25;
+    sfx.wave();
+  } else {
+    skills.freeze = 25;
+    for (const e of enemies) e.frozen = 4;
+    burst(W / 2, (FIELD_TOP + GRID_TOP) / 2, "#d8f2ff", 40, 220);
+    floatText(W / 2, H / 2 - 140, "❄️ 프리즈!", "#a8e8ff", 30, 1.2);
+    sfx.merge();
+  }
+}
 function inBtn(p, b) { return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; }
 function slotAt(p) {
   if (p.y < GRID_TOP || p.y > GRID_TOP + ROWS * (CELL - 8)) return -1;
@@ -332,6 +378,10 @@ function onDown(e) {
   if (state === "over")  { state = "title"; return; }
 
   if (inBtn(p, BTN.sound)) { soundOn = !soundOn; return; }
+  if (inBtn(p, BTN.speed)) { timeScale = timeScale === 1 ? 2 : 1; return; }
+  for (const sb of SKILL_BTNS) {
+    if (Math.hypot(p.x - sb.x, p.y - sb.y) <= sb.r + 8) { useSkill(sb.key); return; }
+  }
   if (inBtn(p, BTN.buy)) {
     if (gold >= buyCost()) {
       const t = rollBuyTier();
@@ -436,10 +486,16 @@ function update(dt) {
   }
 
   // 적 이동
+  // 스킬 쿨다운
+  skills.meteor = Math.max(0, skills.meteor - dt);
+  skills.freeze = Math.max(0, skills.freeze - dt);
+
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
-    e.wob += dt * 4;
-    e.y += e.speed * dt;
+    if (e.frozen > 0) e.frozen -= dt;
+    const slow = e.frozen > 0 ? 0.3 : 1; // ❄️ 빙결 시 감속
+    e.wob += dt * 4 * slow;
+    e.y += e.speed * slow * dt;
     e.x += Math.sin(e.wob) * 12 * dt;
     e.x = Math.max(e.r, Math.min(W - e.r, e.x));
     if (e.hitT > 0) e.hitT -= dt;
@@ -619,8 +675,8 @@ function drawEnemy(e) {
   ctx.fillStyle = "rgba(0,0,0,0.15)";
   ctx.beginPath(); ctx.ellipse(0, e.r * 0.85, e.r * 0.9, e.r * 0.3, 0, 0, Math.PI * 2); ctx.fill();
   ctx.scale(squish, 2 - squish);
-  // 몸통 (노란 블롭)
-  const bodyCol = e.hitT > 0 ? "#fff" : (e.boss ? "#e8d44f" : "#d9d06a");
+  // 몸통 (노란 블롭, 빙결 시 하늘색, 탱커는 카키색)
+  const bodyCol = e.hitT > 0 ? "#fff" : (e.frozen > 0 ? "#b8dcf0" : e.boss ? "#e8d44f" : e.tank ? "#c9bd7a" : "#d9d06a");
   ctx.fillStyle = bodyCol;
   ctx.beginPath();
   ctx.moveTo(-e.r, e.r * 0.8);
@@ -824,9 +880,40 @@ function drawHUD() {
   outlinedText("💰 " + gold, 70, 30, 22, "#ffd93d", "rgba(0,0,0,0.6)", 4);
   outlinedText("❤️ " + lives, 190, 30, 22, "#ff8f8f", "rgba(0,0,0,0.6)", 4);
   outlinedText("웨이브 " + Math.max(wave, 1) + (wave > 0 && wave % 5 === 0 ? " 👑" : ""), 320, 30, 22, "#fff", "rgba(0,0,0,0.6)", 4);
-  // 사운드 버튼
+  // 사운드 & 배속 버튼
   ctx.font = "26px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillText(soundOn ? "🔊" : "🔇", BTN.sound.x + 21, BTN.sound.y + 21);
+  roundRect(BTN.speed.x, BTN.speed.y + 4, BTN.speed.w, BTN.speed.h - 8, 10);
+  ctx.fillStyle = timeScale === 2 ? "#ffd93d" : "rgba(255,255,255,0.2)";
+  ctx.fill();
+  outlinedText(timeScale + "x", BTN.speed.x + 21, BTN.speed.y + 21, 19, timeScale === 2 ? "#5a4a10" : "#fff", "rgba(0,0,0,0.4)", 3);
+
+  // 스킬 버튼 (쿨다운 표시)
+  for (const sb of SKILL_BTNS) {
+    const cd = skills[sb.key], ready = cd <= 0;
+    ctx.beginPath(); ctx.arc(sb.x, sb.y, sb.r, 0, Math.PI * 2);
+    ctx.fillStyle = ready ? "rgba(40,55,20,0.85)" : "rgba(40,40,40,0.7)";
+    ctx.fill();
+    ctx.strokeStyle = ready ? "#ffd93d" : "rgba(255,255,255,0.3)";
+    ctx.lineWidth = 3; ctx.stroke();
+    ctx.globalAlpha = ready ? 1 : 0.45;
+    ctx.font = "26px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(sb.icon, sb.x, sb.y + 1);
+    ctx.globalAlpha = 1;
+    if (!ready) { // 쿨다운 파이 + 남은 초
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.beginPath();
+      ctx.moveTo(sb.x, sb.y);
+      ctx.arc(sb.x, sb.y, sb.r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (cd / sb.max));
+      ctx.closePath(); ctx.fill();
+      outlinedText(Math.ceil(cd), sb.x, sb.y, 20, "#fff");
+    } else if (state === "play") { // 사용 가능 반짝임
+      ctx.globalAlpha = 0.4 + Math.sin(time * 5) * 0.3;
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(sb.x, sb.y, sb.r + 4, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
 
   // 구매 버튼
   const b = BTN.buy, afford = gold >= buyCost();
@@ -947,7 +1034,7 @@ let last = performance.now();
 function loop(now) {
   const dt = Math.min((now - last) / 1000, 0.05);
   last = now;
-  update(dt);
+  update(dt * timeScale); // ⏩ 배속 적용
   draw();
   requestAnimationFrame(loop);
 }
