@@ -122,6 +122,25 @@ function dmgMult()  { return 1 + upg.dmg * 0.15; }
 function rateMult() { return 1 + upg.rate * 0.10; }
 function goldMult() { return 1 + upg.gold * 0.20; }
 
+// 구매 무기 등급 뽑기: 확률 기반, 웨이브가 오르면 고등급 확률 상승
+function rollBuyTier() {
+  const lvl = Math.min(wave, 30);
+  const weights = [
+    Math.max(10, 62 - lvl * 1.6), // 1등급
+    26,                           // 2등급
+    8 + lvl * 0.7,                // 3등급
+    3 + lvl * 0.5,                // 4등급
+    1 + lvl * 0.4,                // 5등급
+  ];
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = Math.random() * total;
+  for (let t = 0; t < weights.length; t++) {
+    r -= weights[t];
+    if (r <= 0) return t + 1;
+  }
+  return 1;
+}
+
 function addUnit(tier) {
   const empty = [];
   for (let i = 0; i < grid.length; i++) if (!grid[i]) empty.push(i);
@@ -310,11 +329,14 @@ function onDown(e) {
   if (inBtn(p, BTN.sound)) { soundOn = !soundOn; return; }
   if (inBtn(p, BTN.buy)) {
     if (gold >= buyCost()) {
-      // 웨이브가 오를수록 구매 무기의 기본 등급 상승
-      let t = 1 + Math.floor(wave / 7);
-      if (Math.random() < 0.3) t++;
-      t = Math.min(t, 4);
-      if (addUnit(t)) { gold -= buyCost(); buyCount++; sfx.buy(); }
+      const t = rollBuyTier();
+      if (addUnit(t)) {
+        gold -= buyCost(); buyCount++; sfx.buy();
+        if (t >= 3) { // 고등급 당첨 연출
+          floatText(BTN.buy.x + BTN.buy.w / 2, BTN.buy.y - 12, "🎉 " + t + "등급 " + TIER_NAME[t - 1] + "!", TIER_COLOR[t - 1], 21, 1.3);
+          sfx.merge();
+        }
+      }
       else { floatText(BTN.buy.x + BTN.buy.w / 2, BTN.buy.y - 10, "칸이 가득 찼어요!", "#ffd93d", 18); sfx.error(); }
     } else { floatText(BTN.buy.x + BTN.buy.w / 2, BTN.buy.y - 10, "골드 부족!", "#ff6b6b", 18); sfx.error(); }
     return;
