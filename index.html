@@ -93,7 +93,7 @@ const sfx = {
 // ---------- 게임 상태 ----------
 let state = "title";   // title | play | over
 let grid, enemies, projectiles, particles, floats, effects;
-let gold, lives, wave, buyCount, kills;
+let gold, lives, wave, buyCount, kills, upg;
 let spawnQueue, spawnTimer, waveDelay, waveActive;
 let shakeT = 0, flashT = 0, time = 0;
 let drag = null;       // {idx, x, y}
@@ -103,12 +103,24 @@ function reset() {
   grid = Array(ROWS * COLS).fill(null);
   enemies = []; projectiles = []; particles = []; floats = []; effects = [];
   gold = 120; lives = 10; wave = 0; buyCount = 0; kills = 0;
+  upg = { dmg: 0, rate: 0, gold: 0 };
   spawnQueue = 0; spawnTimer = 0; waveDelay = 2; waveActive = false;
   shakeT = 0; flashT = 0;
   addUnit(1); addUnit(1);
 }
 
-function buyCost() { return Math.floor(30 * Math.pow(1.16, buyCount)); }
+function buyCost() { return Math.floor(30 * Math.pow(1.13, buyCount)); }
+
+// ---------- 업그레이드 ----------
+function upgCost(k) {
+  const lv = upg[k];
+  if (k === "dmg")  return Math.floor(40 * Math.pow(1.4, lv));
+  if (k === "rate") return Math.floor(60 * Math.pow(1.45, lv));
+  return Math.floor(50 * Math.pow(1.5, lv));
+}
+function dmgMult()  { return 1 + upg.dmg * 0.15; }
+function rateMult() { return 1 + upg.rate * 0.10; }
+function goldMult() { return 1 + upg.gold * 0.20; }
 
 function addUnit(tier) {
   const empty = [];
@@ -167,7 +179,7 @@ function spawnEnemy() {
   });
 }
 
-function killGold(e) { return Math.max(2, Math.floor((4 + wave * 1.6) * (e.boss ? 10 : 1))); }
+function killGold(e) { return Math.max(2, Math.floor((5 + wave * 2) * (e.boss ? 10 : 1) * goldMult())); }
 
 // ---------- 데미지 & 처치 (모든 공격이 공유) ----------
 function killEnemy(e) {
@@ -198,10 +210,10 @@ function aoeDamage(x, y, r, dmg, tier, burn) {
   }
 }
 // 체인 라이트닝: 가장 앞의 적에서 근처 적으로 튕김
-function chainLightning(c, first, atk) {
+function chainLightning(c, first, atk, baseDmg) {
   const pts = [{ x: c.x, y: c.y - 20 }];
   const hit = new Set();
-  let cur = first, dmg = atk.dmg;
+  let cur = first, dmg = baseDmg;
   for (let i = 0; i < atk.chains && cur; i++) {
     // 번개가 지그재그로 보이도록 중간점 추가
     const prev = pts[pts.length - 1];
@@ -230,29 +242,30 @@ function frontEnemies(n) {
 // 무기 발사: 종류별로 완전히 다른 공격
 function fireWeapon(tier, c, targets) {
   const atk = ATTACK[tier - 1], main = targets[0];
+  const dmg = Math.round(atk.dmg * dmgMult()); // ⚔️ 공격력 업그레이드 적용
   sfx.shoot();
   switch (atk.type) {
     case "chain":
-      chainLightning(c, main, atk);
+      chainLightning(c, main, atk, dmg);
       break;
     case "star": // 별똥별: 하늘에서 낙하 후 폭발
       for (const tg of targets)
-        projectiles.push({ kind: "star", x: tg.x + (Math.random() - 0.5) * 80, y: tg.y - 340, tx: tg.x, ty: tg.y, speed: atk.speed, dmg: atk.dmg, tier, aoe: atk.aoe, rot: Math.random() * 6 });
+        projectiles.push({ kind: "star", x: tg.x + (Math.random() - 0.5) * 80, y: tg.y - 340, tx: tg.x, ty: tg.y, speed: atk.speed, dmg, tier, aoe: atk.aoe, rot: Math.random() * 6 });
       break;
     case "pierce": { // 관통 화살: 직선으로 끝까지
       const dx = main.x - c.x, dy = main.y - (c.y - 20), d = Math.hypot(dx, dy) || 1;
-      projectiles.push({ kind: "pierce", x: c.x, y: c.y - 20, vx: dx / d * atk.speed, vy: dy / d * atk.speed, dmg: atk.dmg, tier, hitSet: new Set(), rot: Math.atan2(dy, dx) + Math.PI / 2 });
+      projectiles.push({ kind: "pierce", x: c.x, y: c.y - 20, vx: dx / d * atk.speed, vy: dy / d * atk.speed, dmg, tier, hitSet: new Set(), rot: Math.atan2(dy, dx) + Math.PI / 2 });
       break;
     }
     case "boomerang": // 부메랑: 갔다가 돌아오며 경로의 적 모두 타격
-      projectiles.push({ kind: "boom", x: c.x, y: c.y - 20, ox: c.x, oy: c.y - 20, tx: main.x, ty: main.y - 30, phase: 0, speed: atk.speed, dmg: atk.dmg, tier, hitSet: new Set(), rot: 0 });
+      projectiles.push({ kind: "boom", x: c.x, y: c.y - 20, ox: c.x, oy: c.y - 20, tx: main.x, ty: main.y - 30, phase: 0, speed: atk.speed, dmg, tier, hitSet: new Set(), rot: 0 });
       break;
     case "spread": // 삼지창: 서로 다른 적 3마리 동시 공격
       for (const tg of targets)
-        projectiles.push({ kind: "homing", sub: "trident", target: tg, x: c.x, y: c.y - 20, speed: atk.speed, dmg: atk.dmg, tier, aoe: 0, burn: 0, rot: 0 });
+        projectiles.push({ kind: "homing", sub: "trident", target: tg, x: c.x, y: c.y - 20, speed: atk.speed, dmg, tier, aoe: 0, burn: 0, rot: 0 });
       break;
     default: // basic / dagger / slash / homing / fire
-      projectiles.push({ kind: "homing", sub: atk.type, target: main, x: c.x, y: c.y - 20, speed: atk.speed, dmg: atk.dmg, tier, aoe: atk.aoe || 0, burn: atk.burn || 0, rot: 0, spin: 0 });
+      projectiles.push({ kind: "homing", sub: atk.type, target: main, x: c.x, y: c.y - 20, speed: atk.speed, dmg, tier, aoe: atk.aoe || 0, burn: atk.burn || 0, rot: 0, spin: 0 });
   }
 }
 
@@ -268,7 +281,15 @@ function burst(x, y, color, n, spd) {
 }
 
 // ---------- 입력 ----------
-const BTN = { buy: { x: 12, y: GRID_TOP - 66, w: 210, h: 54 }, sound: { x: W - 54, y: 14, w: 42, h: 42 } };
+const BTN = {
+  buy: { x: 12, y: GRID_TOP - 66, w: 180, h: 54 },
+  upg: [
+    { key: "dmg",  x: 200, y: GRID_TOP - 66, w: 84, h: 54, icon: "⚔️", label: "공격력", pct: "+15%" },
+    { key: "rate", x: 292, y: GRID_TOP - 66, w: 84, h: 54, icon: "⏩", label: "공속",   pct: "+10%" },
+    { key: "gold", x: 384, y: GRID_TOP - 66, w: 84, h: 54, icon: "💰", label: "골드",   pct: "+20%" },
+  ],
+  sound: { x: W - 54, y: 14, w: 42, h: 42 },
+};
 function inBtn(p, b) { return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h; }
 function slotAt(p) {
   if (p.y < GRID_TOP || p.y > GRID_TOP + ROWS * (CELL - 8)) return -1;
@@ -289,14 +310,27 @@ function onDown(e) {
   if (inBtn(p, BTN.sound)) { soundOn = !soundOn; return; }
   if (inBtn(p, BTN.buy)) {
     if (gold >= buyCost()) {
-      // 웨이브가 오를수록 조금 더 높은 등급이 나올 확률
-      let t = 1;
-      if (wave >= 8 && Math.random() < 0.35) t = 2;
-      if (wave >= 16 && Math.random() < 0.2) t = 3;
+      // 웨이브가 오를수록 구매 무기의 기본 등급 상승
+      let t = 1 + Math.floor(wave / 7);
+      if (Math.random() < 0.3) t++;
+      t = Math.min(t, 4);
       if (addUnit(t)) { gold -= buyCost(); buyCount++; sfx.buy(); }
       else { floatText(BTN.buy.x + BTN.buy.w / 2, BTN.buy.y - 10, "칸이 가득 찼어요!", "#ffd93d", 18); sfx.error(); }
     } else { floatText(BTN.buy.x + BTN.buy.w / 2, BTN.buy.y - 10, "골드 부족!", "#ff6b6b", 18); sfx.error(); }
     return;
+  }
+  // 업그레이드 구매
+  for (const b of BTN.upg) {
+    if (inBtn(p, b)) {
+      const cost = upgCost(b.key);
+      if (gold >= cost) {
+        gold -= cost; upg[b.key]++;
+        sfx.merge();
+        burst(b.x + b.w / 2, b.y + b.h / 2, "#7dffb2", 12, 130);
+        floatText(b.x + b.w / 2, b.y - 12, b.icon + " " + b.label + " Lv" + upg[b.key], "#7dffb2", 17, 1.1);
+      } else { floatText(b.x + b.w / 2, b.y - 12, "골드 부족!", "#ff6b6b", 16); sfx.error(); }
+      return;
+    }
   }
   const idx = slotAt(p);
   if (idx >= 0 && grid[idx]) drag = { idx, x: p.x, y: p.y };
@@ -316,11 +350,13 @@ function onUp(e) {
     const a = grid[from], b = grid[to];
     if (!b) { grid[to] = a; grid[from] = null; }                       // 이동
     else if (b.tier === a.tier && a.tier < MAX_TIER) {                 // 합성!
-      grid[to] = { tier: a.tier + 1, cd: 0, pop: 1, recoil: 0 };
+      let nt = a.tier + 1, jackpot = false;
+      if (nt < MAX_TIER && Math.random() < 0.12) { nt++; jackpot = true; } // 🎉 12% 확률 2단계 점프
+      grid[to] = { tier: nt, cd: 0, pop: 1, recoil: 0 };
       grid[from] = null;
       const c = cellCenter(to);
-      burst(c.x, c.y, TIER_COLOR[a.tier], 24, 160);
-      floatText(c.x, c.y - 40, TIER_NAME[a.tier] + " 획득!", TIER_COLOR[a.tier], 20, 1.2);
+      burst(c.x, c.y, TIER_COLOR[nt - 1], jackpot ? 44 : 24, jackpot ? 240 : 160);
+      floatText(c.x, c.y - 40, (jackpot ? "🎉 대박! " : "") + TIER_NAME[nt - 1] + " 획득!", jackpot ? "#ffd93d" : TIER_COLOR[nt - 1], jackpot ? 24 : 20, 1.2);
       sfx.merge();
     } else if (b.tier === a.tier && a.tier >= MAX_TIER) {
       floatText(drag.x, drag.y - 30, "최고 등급!", "#ffd93d", 18); sfx.error();
@@ -360,7 +396,7 @@ function update(dt) {
     } else if (enemies.length === 0) {
       waveActive = false;
       waveDelay = 2.5;
-      const bonus = 25 + wave * 12;
+      const bonus = Math.floor((30 + wave * 18) * goldMult());
       gold += bonus;
       floatText(W / 2, H / 2 - 80, "웨이브 클리어! +" + bonus + "💰", "#ffd93d", 24, 1.5);
     }
@@ -407,7 +443,7 @@ function update(dt) {
       const targets = frontEnemies(atk.count || 1);
       if (targets.length) {
         fireWeapon(u.tier, cellCenter(i), targets);
-        u.cd = 1 / atk.rate;
+        u.cd = 1 / (atk.rate * rateMult()); // ⏩ 공속 업그레이드 적용
         u.recoil = 1;
       }
     }
@@ -765,7 +801,26 @@ function drawHUD() {
   ctx.fillStyle = afford ? "#8e44d9" : "#777";
   ctx.fill();
   ctx.strokeStyle = "rgba(0,0,0,0.3)"; ctx.lineWidth = 3; ctx.stroke();
-  outlinedText("무기 구매  💰" + buyCost(), b.x + b.w / 2, b.y + b.h / 2, 21, "#fff", "rgba(0,0,0,0.5)", 4);
+  outlinedText("무기 구매 💰" + buyCost(), b.x + b.w / 2, b.y + b.h / 2, 19, "#fff", "rgba(0,0,0,0.5)", 4);
+
+  // 업그레이드 버튼 3종
+  for (const ub of BTN.upg) {
+    const cost = upgCost(ub.key), ok = gold >= cost;
+    roundRect(ub.x, ub.y, ub.w, ub.h, 12);
+    ctx.fillStyle = ok ? "#2f9e6e" : "#6b6b6b";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.3)"; ctx.lineWidth = 3; ctx.stroke();
+    outlinedText(ub.icon + ub.pct, ub.x + ub.w / 2, ub.y + 15, 14, "#fff", "rgba(0,0,0,0.5)", 3);
+    outlinedText("💰" + cost, ub.x + ub.w / 2, ub.y + 39, 14, "#ffd93d", "rgba(0,0,0,0.5)", 3);
+    // 레벨 뱃지
+    if (upg[ub.key] > 0) {
+      ctx.fillStyle = "#ffd93d";
+      roundRect(ub.x + ub.w - 26, ub.y - 8, 30, 18, 8); ctx.fill();
+      ctx.fillStyle = "#5a4a10";
+      ctx.font = "900 12px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("Lv" + upg[ub.key], ub.x + ub.w - 11, ub.y + 1);
+    }
+  }
 
   // 다음 웨이브 안내
   if (!waveActive && state === "play") {
