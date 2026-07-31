@@ -126,16 +126,16 @@ function goldMult() { return 1 + upg.gold * 0.20; }
 function rollBuyTier() {
   const lvl = Math.min(wave, 30);
   const weights = [
-    Math.max(4, 48 - lvl * 1.8), // 1등급
-    26,                          // 2등급
-    14 + lvl * 0.9,              // 3등급
-    6 + lvl * 0.7,               // 4등급
-    2 + lvl * 0.6,               // 5등급
-    0.5 + lvl * 0.35,            // 6등급
-    0.2 + lvl * 0.22,            // 7등급
-    0.1 + lvl * 0.12,            // 8등급
-    lvl * 0.03,                  // 9등급
-    lvl * 0.015,                 // 10등급 (초희귀!)
+    Math.max(3, 40 - lvl * 1.5), // 1등급
+    22,                          // 2등급
+    14 + lvl * 0.7,              // 3등급
+    8 + lvl * 0.5,               // 4등급
+    5.5 + lvl * 0.45,            // 5등급
+    4 + lvl * 0.35,              // 6등급
+    3 + lvl * 0.25,              // 7등급
+    1.5 + lvl * 0.18,            // 8등급
+    1 + lvl * 0.12,              // 9등급
+    1 + lvl * 0.08,              // 10등급 (웨이브1에서도 ~1%)
   ];
   const total = weights.reduce((a, b) => a + b, 0);
   let r = Math.random() * total;
