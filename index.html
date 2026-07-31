@@ -35,11 +35,13 @@ const COLS = 5, ROWS = 3;
 const GRID_TOP = H - 300;          // 격자판 시작 y
 const CELL = W / COLS;             // 96
 const FIELD_TOP = 70;              // 전장 시작 y (HUD 아래)
-const MAX_TIER = 10;
+const MAX_TIER = 20;
 
-const TIER_EMOJI = ["⛏️","🗡️","🏹","🪃","🔱","⚔️","🪄","🔥","⚡","🌟"];
-const TIER_COLOR = ["#9b7bd8","#8fd14f","#e8a33d","#d97b4f","#4fb7d9","#d94f6b","#b04fd9","#ff7b2e","#ffd93d","#7dffb2"];
-const TIER_NAME  = ["곡괭이","단검","활","부메랑","삼지창","대검","마법지팡이","화염","번개","별의 힘"];
+const TIER_EMOJI = ["⛏️","🗡️","🏹","🪃","🔱","⚔️","🪄","🔥","⚡","🌟","💫","🌪️","🗿","☄️","🌊","🌩️","🌋","🌀","🐉","🌈"];
+const TIER_COLOR = ["#9b7bd8","#8fd14f","#e8a33d","#d97b4f","#4fb7d9","#d94f6b","#b04fd9","#ff7b2e","#ffd93d","#7dffb2",
+                    "#9ad8ff","#7ee0c3","#a58b6f","#ff6b3d","#3d9bff","#ffe14f","#e0443d","#7b5cff","#3dd96b","#ff9be0"];
+const TIER_NAME  = ["곡괭이","단검","활","부메랑","삼지창","대검","마법지팡이","화염","번개","별의 힘",
+                    "혜성","회오리","골렘 주먹","메테오","해일","뇌신","화산","블랙홀","드래곤","신의 심판"];
 
 // ---------- 캔버스 & 스케일 ----------
 const canvas = document.getElementById("game");
@@ -114,6 +116,8 @@ function reset() {
 function buyCost() { return Math.floor(30 * Math.pow(1.13, buyCount)); }
 // 자동 무기 생성 주기 (웨이브가 오르면 조금씩 빨라짐)
 function unitInterval() { return Math.max(2.0, 3.2 - wave * 0.04); }
+// 무기 판매 가격
+function sellPrice(t) { return Math.floor(12 * Math.pow(1.9, t - 1)); }
 
 // ---------- 업그레이드 ----------
 function upgCost(k) {
@@ -130,16 +134,16 @@ function goldMult() { return 1 + upg.gold * 0.20; }
 function rollBuyTier() {
   const lvl = Math.min(wave, 30);
   const weights = [
-    Math.max(3, 30 - lvl * 1.2), // 1등급
-    18,                          // 2등급
+    Math.max(3, 34 - lvl * 1.3), // 1등급
+    20,                          // 2등급
     12 + lvl * 0.5,              // 3등급
     9 + lvl * 0.4,               // 4등급
-    7 + lvl * 0.35,              // 5등급
-    6 + lvl * 0.3,               // 6등급
-    5.5 + lvl * 0.25,            // 7등급
-    4.5 + lvl * 0.2,             // 8등급
-    3 + lvl * 0.15,              // 9등급
-    5 + lvl * 0.1,               // 10등급 (웨이브1에서도 ~5%)
+    3.5 + lvl * 0.2,             // 5등급
+    3 + lvl * 0.15,              // 6등급
+    2.75 + lvl * 0.13,           // 7등급
+    2.25 + lvl * 0.1,            // 8등급
+    1.5 + lvl * 0.08,            // 9등급
+    2.2 + lvl * 0.05,            // 10등급 (웨이브1 ~2.5%)
   ];
   const total = weights.reduce((a, b) => a + b, 0);
   let r = Math.random() * total;
@@ -174,7 +178,25 @@ const ATTACK = [
   { type: "fire",      dmg: 5200,  rate: 0.95, speed: 600, aoe: 105, burn: 0.4 },
   { type: "chain",     dmg: 13500, rate: 1.0,  chains: 4 },
   { type: "star",      dmg: 22000, rate: 0.9,  speed: 780, count: 3, aoe: 88 },
+  // 11~20등급: 합성으로만 얻는 초월 무기
+  { type: "star",      dmg: 55000,     rate: 1.0,  speed: 800,  count: 4, aoe: 95 },             // 11 혜성
+  { type: "boomerang", dmg: 137000,    rate: 1.0,  speed: 560 },                                 // 12 회오리
+  { type: "slash",     dmg: 330000,    rate: 1.05, speed: 660,  aoe: 85 },                       // 13 골렘 주먹
+  { type: "fire",      dmg: 820000,    rate: 1.0,  speed: 620,  aoe: 130, burn: 0.5 },           // 14 메테오
+  { type: "pierce",    dmg: 2100000,   rate: 1.1,  speed: 1000 },                                // 15 해일
+  { type: "chain",     dmg: 5200000,   rate: 1.0,  chains: 6 },                                  // 16 뇌신
+  { type: "fire",      dmg: 13000000,  rate: 1.0,  speed: 640,  aoe: 150, burn: 0.6 },           // 17 화산
+  { type: "homing",    dmg: 33000000,  rate: 1.0,  speed: 600,  aoe: 160 },                      // 18 블랙홀
+  { type: "spread",    dmg: 82000000,  rate: 1.05, speed: 750,  count: 4 },                      // 19 드래곤
+  { type: "star",      dmg: 205000000, rate: 1.0,  speed: 820,  count: 5, aoe: 120 },            // 20 신의 심판
 ];
+// 큰 숫자 표기 (1.2K / 3.4M / 5.6B)
+function fmt(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+  if (n >= 1e4) return (n / 1e3).toFixed(0) + "K";
+  return String(Math.ceil(n));
+}
 
 // ---------- 웨이브 ----------
 function startWave() {
@@ -342,6 +364,7 @@ const BTN = {
   sound: { x: W - 54, y: 14, w: 42, h: 42 },
   speed: { x: W - 104, y: 14, w: 42, h: 42 },
 };
+const TRASH = { x: 46, y: GRID_TOP - 122, r: 34 }; // 판매 존 (드래그 중에만 표시)
 const SKILL_BTNS = [
   { key: "meteor", x: W - 46, y: GRID_TOP - 122, r: 28, icon: "☄️", max: 30 },
   { key: "freeze", x: W - 46, y: GRID_TOP - 192, r: 28, icon: "❄️", max: 25 },
@@ -433,6 +456,18 @@ function onMove(e) {
 function onUp(e) {
   e.preventDefault();
   if (!drag) return;
+  // 🗑️ 판매 존에 놓으면 판매
+  if (grid[drag.idx] && Math.hypot(drag.x - TRASH.x, drag.y - TRASH.y) <= TRASH.r + 12) {
+    const u = grid[drag.idx];
+    const price = sellPrice(u.tier);
+    gold += price;
+    grid[drag.idx] = null;
+    floatText(TRASH.x + 60, TRASH.y, "판매 +" + fmt(price) + "💰", "#ffd93d", 19, 1.1);
+    burst(TRASH.x, TRASH.y, TIER_COLOR[u.tier - 1], 14, 140);
+    sfx.buy();
+    drag = null;
+    return;
+  }
   const to = slotAt({ x: drag.x, y: drag.y });
   const from = drag.idx;
   if (to >= 0 && to !== from && grid[from]) {
@@ -744,7 +779,7 @@ function drawEnemy(e) {
   ctx.restore();
   // HP 숫자 (전장에 들어온 뒤에만 표시)
   const ty = e.y - e.r * (e.boss ? 1.9 : 1.75);
-  if (isFinite(e.hp) && ty > 76) outlinedText(String(Math.ceil(e.hp)), e.x, ty, e.boss ? 34 : 24, "#fff");
+  if (isFinite(e.hp) && ty > 76) outlinedText(fmt(e.hp), e.x, ty, e.boss ? 34 : 24, "#fff");
 }
 
 // ---------- 무기별 투사체 그리기 ----------
@@ -892,6 +927,16 @@ function drawGrid() {
   // 드래그 중 유닛
   if (drag && grid[drag.idx]) {
     const u = grid[drag.idx];
+    // 🗑️ 판매 존 표시
+    const overTrash = Math.hypot(drag.x - TRASH.x, drag.y - TRASH.y) <= TRASH.r + 12;
+    ctx.beginPath(); ctx.arc(TRASH.x, TRASH.y, TRASH.r + (overTrash ? 6 : 0), 0, Math.PI * 2);
+    ctx.fillStyle = overTrash ? "rgba(220,60,60,0.85)" : "rgba(40,40,40,0.65)";
+    ctx.fill();
+    ctx.strokeStyle = overTrash ? "#fff" : "rgba(255,255,255,0.4)";
+    ctx.lineWidth = 3; ctx.stroke();
+    ctx.font = "26px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("🗑️", TRASH.x, TRASH.y - 6);
+    outlinedText("+" + fmt(sellPrice(u.tier)), TRASH.x, TRASH.y + 18, 13, "#ffd93d", "rgba(0,0,0,0.6)", 3);
     const to = slotAt({ x: drag.x, y: drag.y });
     // 합성 가능 하이라이트
     if (to >= 0 && to !== drag.idx && grid[to] && grid[to].tier === u.tier && u.tier < MAX_TIER) {
