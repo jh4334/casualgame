@@ -279,9 +279,14 @@ function chainLightning(c, first, atk, baseDmg) {
   }
   effects.push({ type: "bolt", pts, life: 0.16, t: 0 });
 }
-// 방어선에 가까운 순서로 최대 n마리
-function frontEnemies(n) {
-  return enemies.filter(e => e.y > FIELD_TOP - 10).sort((a, b) => b.y - a.y).slice(0, n);
+// 자기 열(레인) 앞의 적만, 방어선에 가까운 순서로 최대 n마리
+const LANE_MARGIN = 24; // 레인 폭 여유 (옆 칸 경계에 걸친 적도 커버)
+function laneEnemies(col, n) {
+  const left = col * CELL - LANE_MARGIN, right = (col + 1) * CELL + LANE_MARGIN;
+  return enemies
+    .filter(e => e.y > FIELD_TOP - 10 && e.x >= left && e.x <= right)
+    .sort((a, b) => b.y - a.y)
+    .slice(0, n);
 }
 // 무기 발사: 종류별로 완전히 다른 공격
 function fireWeapon(tier, c, targets) {
@@ -529,7 +534,7 @@ function update(dt) {
     u.cd -= dt;
     if (u.cd <= 0 && enemies.length) {
       const atk = ATTACK[u.tier - 1];
-      const targets = frontEnemies(atk.count || 1);
+      const targets = laneEnemies(i % COLS, atk.count || 1); // 자기 열 앞의 적만
       if (targets.length) {
         fireWeapon(u.tier, cellCenter(i), targets);
         u.cd = 1 / (atk.rate * rateMult()); // ⏩ 공속 업그레이드 적용
@@ -658,6 +663,15 @@ function drawField() {
   ctx.fillStyle = "#8db32e";
   ctx.fillRect(0, 0, 26, GRID_TOP);
   ctx.fillRect(W - 26, 0, 26, GRID_TOP);
+  // 드래그 중인 무기의 담당 레인 표시
+  if (drag && grid[drag.idx]) {
+    const col = Math.max(0, Math.min(COLS - 1, Math.floor(drag.x / CELL)));
+    ctx.fillStyle = "rgba(255,255,255,0.14)";
+    ctx.fillRect(col * CELL, FIELD_TOP, CELL, GRID_TOP - FIELD_TOP);
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(col * CELL + 1, FIELD_TOP, CELL - 2, GRID_TOP - FIELD_TOP);
+  }
   // 방어선
   const ly = GRID_TOP - 14;
   ctx.strokeStyle = "rgba(255,80,80,0.55)";
@@ -948,7 +962,8 @@ function drawHUD() {
   }
   // 조작 안내 (첫 웨이브 동안)
   if (wave <= 1) {
-    outlinedText("같은 무기를 드래그해서 합치세요!", W / 2, GRID_TOP - 100, 20, "#fff");
+    outlinedText("같은 무기를 드래그해서 합치세요!", W / 2, GRID_TOP - 122, 20, "#fff");
+    outlinedText("무기는 자기 세로줄 앞의 적만 공격해요!", W / 2, GRID_TOP - 94, 18, "#ffd93d");
   }
 }
 
