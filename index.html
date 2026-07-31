@@ -102,7 +102,7 @@ let best = +(localStorage.getItem("smd_best") || 0);
 function reset() {
   grid = Array(ROWS * COLS).fill(null);
   enemies = []; projectiles = []; particles = []; floats = []; effects = [];
-  gold = 120; lives = 10; wave = 0; buyCount = 0; kills = 0;
+  gold = 150; lives = 10; wave = 0; buyCount = 0; kills = 0;
   upg = { dmg: 0, rate: 0, gold: 0 };
   spawnQueue = 0; spawnTimer = 0; waveDelay = 2; waveActive = false;
   shakeT = 0; flashT = 0;
@@ -171,25 +171,25 @@ const ATTACK = [
 function startWave() {
   wave++;
   waveActive = true;
-  spawnQueue = 8 + Math.floor(wave * 1.7);
+  spawnQueue = 8 + Math.floor(wave * 1.4);
   spawnTimer = 0.5;
   sfx.wave();
   floatText(W / 2, H / 2 - 120, wave % 5 === 0 ? "👑 보스 웨이브 " + wave : "웨이브 " + wave, "#fff", 30, 1.4);
 }
-function enemyBaseHp() { return 26 * Math.pow(1.33, wave - 1); }
+function enemyBaseHp() { return 24 * Math.pow(1.29, wave - 1); }
 
 function spawnEnemy() {
   const isBoss = (wave % 5 === 0) && spawnQueue === 1; // 5의 배수 웨이브 마지막은 보스
-  const isFast = !isBoss && wave >= 8 && Math.random() < 0.25; // 빠른 돌진형
+  const isFast = !isBoss && wave >= 8 && Math.random() < 0.18; // 빠른 돌진형
   let hp = enemyBaseHp() * (0.85 + Math.random() * 0.4);
-  if (isBoss) hp *= 17;
+  if (isBoss) hp *= 15;
   if (isFast) hp *= 0.55;
   hp = Math.round(hp);
   enemies.push({
     x: 60 + Math.random() * (W - 120),
     y: FIELD_TOP - 40,
     hp, maxHp: hp,
-    speed: (isBoss ? 18 : (isFast ? 55 : 28) + Math.random() * 16) * Math.pow(1.02, wave),
+    speed: (isBoss ? 17 : (isFast ? 48 : 27) + Math.random() * 15) * Math.pow(1.015, wave),
     r: isBoss ? 46 : (isFast ? 20 : 26 + Math.random() * 6),
     boss: isBoss, fast: isFast,
     wob: Math.random() * Math.PI * 2,
@@ -413,11 +413,12 @@ function update(dt) {
       if (spawnTimer <= 0) {
         spawnEnemy();
         spawnQueue--;
-        spawnTimer = Math.max(0.28, 1.35 - wave * 0.05) * (0.7 + Math.random() * 0.6);
+        spawnTimer = Math.max(0.35, 1.4 - wave * 0.045) * (0.7 + Math.random() * 0.6);
       }
     } else if (enemies.length === 0) {
       waveActive = false;
-      waveDelay = 2.5;
+      waveDelay = 3.5; // 합성할 여유 시간
+
       const bonus = Math.floor((30 + wave * 18) * goldMult());
       gold += bonus;
       floatText(W / 2, H / 2 - 80, "웨이브 클리어! +" + bonus + "💰", "#ffd93d", 24, 1.5);
