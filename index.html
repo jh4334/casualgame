@@ -95,7 +95,7 @@ const sfx = {
 // ---------- 게임 상태 ----------
 let state = "title";   // title | play | over
 let grid, enemies, projectiles, particles, floats, effects;
-let gold, lives, wave, buyCount, kills, upg, skills;
+let gold, lives, wave, buyCount, kills, upg, skills, peakTier;
 let timeScale = 1;
 let spawnQueue, spawnTimer, waveDelay, waveActive, unitTimer;
 let shakeT = 0, flashT = 0, time = 0;
@@ -108,6 +108,7 @@ function reset() {
   gold = 150; lives = 10; wave = 0; buyCount = 0; kills = 0;
   upg = { dmg: 0, rate: 0, gold: 0 };
   skills = { meteor: 0, freeze: 0 };
+  peakTier = 1;
   spawnQueue = 0; spawnTimer = 0; waveDelay = 2; waveActive = false; unitTimer = 0;
   shakeT = 0; flashT = 0;
   addUnit(1); addUnit(1);
@@ -149,9 +150,15 @@ function rollBuyTier() {
   let r = Math.random() * total;
   for (let t = 0; t < weights.length; t++) {
     r -= weights[t];
-    if (r <= 0) return t + 1;
+    if (r <= 0) return spawnTier(t + 1);
   }
-  return 1;
+  return spawnTier(1);
+}
+// 스마트 뽑기: 보유 최고 등급이 오르면 뽑기 등급대도 함께 상승
+// (최고 등급 12 → 3~12등급대에서 뽑힘)
+function spawnTier(offset) {
+  const base = Math.max(1, peakTier - 9);
+  return Math.min(MAX_TIER, base + offset - 1);
 }
 
 function addUnit(tier) {
@@ -160,6 +167,7 @@ function addUnit(tier) {
   if (!empty.length) return false;
   const idx = empty[Math.floor(Math.random() * empty.length)];
   grid[idx] = { tier, cd: Math.random() * 0.5, pop: 1, recoil: 0 };
+  peakTier = Math.max(peakTier, tier);
   return true;
 }
 
@@ -245,6 +253,19 @@ function killEnemy(e) {
   floatText(e.x, e.y - e.r - 10, "+" + g, "#ffd93d", 18);
   burst(e.x, e.y, "#c9d94f", e.boss ? 40 : 14, e.boss ? 220 : 130);
   sfx.kill();
+  // 👑 보스 보상: 최고 등급 -1 무기 드랍 (칸이 없으면 골드)
+  if (e.boss) {
+    const t = Math.max(1, Math.min(MAX_TIER, peakTier - 1));
+    if (addUnit(t)) {
+      floatText(W / 2, H / 2 - 60, "👑 보스 보상! " + t + "등급 " + TIER_NAME[t - 1] + "!", "#ffd93d", 26, 1.8);
+      burst(W / 2, H / 2 - 60, "#ffd93d", 30, 220);
+      sfx.wave();
+    } else {
+      const bg = Math.floor(150 * (1 + wave / 4) * goldMult());
+      gold += bg;
+      floatText(W / 2, H / 2 - 60, "👑 보스 보상! +" + fmt(bg) + "💰", "#ffd93d", 26, 1.8);
+    }
+  }
   // 분열형: 죽으면 미니 슬라임 2마리로 쪼개짐
   if (e.split) {
     for (let k = -1; k <= 1; k += 2) {
@@ -506,6 +527,7 @@ function onUp(e) {
       if (nt < MAX_TIER && Math.random() < 0.12) { nt++; jackpot = true; } // 🎉 12% 확률 2단계 점프
       grid[to] = { tier: nt, cd: 0, pop: 1, recoil: 0 };
       grid[from] = null;
+      peakTier = Math.max(peakTier, nt);
       const c = cellCenter(to);
       burst(c.x, c.y, TIER_COLOR[nt - 1], jackpot ? 44 : 24, jackpot ? 240 : 160);
       floatText(c.x, c.y - 40, (jackpot ? "🎉 대박! " : "") + TIER_NAME[nt - 1] + " 획득!", jackpot ? "#ffd93d" : TIER_COLOR[nt - 1], jackpot ? 24 : 20, 1.2);
