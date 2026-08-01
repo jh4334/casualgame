@@ -42,6 +42,29 @@ const TIER_COLOR = ["#9b7bd8","#8fd14f","#e8a33d","#d97b4f","#4fb7d9","#d94f6b",
                     "#9ad8ff","#7ee0c3","#a58b6f","#ff6b3d","#3d9bff","#ffe14f","#e0443d","#7b5cff","#3dd96b","#ff9be0"];
 const TIER_NAME  = ["곡괭이","단검","활","부메랑","삼지창","대검","마법지팡이","화염","번개","별의 힘",
                     "혜성","회오리","골렘 주먹","메테오","해일","뇌신","화산","블랙홀","드래곤","신의 심판"];
+// 🔍 Phase 3: 무기 툴팁용 공격 방식 한 줄 설명 (등급 1~20 순서)
+const TIER_DESC = [
+  "가장 앞의 적에게 단발 공격",
+  "은빛 단검으로 빠르게 연속 찌르기",
+  "직선으로 날아가 여러 적을 관통",
+  "왕복하며 경로의 적을 두 번 타격",
+  "서로 다른 적 3마리를 동시 공격",
+  "회전 베기로 소범위 적을 강타",
+  "유도 마법탄이 명중 시 폭발",
+  "화염 폭발 + 지속 화상 피해",
+  "번개가 적 사이를 4번 연쇄",
+  "별똥별 3발이 낙하해 광역 폭발",
+  "혜성 4발이 낙하해 대폭발",
+  "레인을 쓸어올리며 끌어당겨 연타",
+  "하늘에서 내리찍는 광역 충격파",
+  "초대형 폭발 + 강력한 화상",
+  "레인 폭 전체의 물의 장벽이 쓸어올림",
+  "굵은 번개가 6번 연쇄 감전",
+  "용암탄 4발 낙하 + 광역 화상",
+  "적을 빨아들이며 연속 광역 피해",
+  "거대 브레스가 레인을 관통",
+  "레인 전체를 즉시 심판하는 빔",
+];
 
 // ---------- 캔버스 & 스케일 ----------
 const canvas = document.getElementById("game");
@@ -66,19 +89,38 @@ function ptFromEvent(e) {
 }
 
 // ---------- 사운드 (WebAudio) ----------
-let audioCtx = null, soundOn = true;
+// 🔊 Phase 3: 3단 사운드 모드 — 2 = 전체 ON / 1 = 효과음만 / 0 = 음소거
+let audioCtx = null;
+let soundMode = (function () {
+  const raw = lsGet("smd_sound");
+  if (raw === null || raw === "") return 2;      // 저장값 없음 → 전체 ON (Number(null)===0 주의)
+  const n = Number(raw);
+  return (isFinite(n) && n >= 0 && n <= 2) ? Math.floor(n) : 2;   // 깨진 값이면 전체 ON
+})();
+function sfxEnabled() { return soundMode >= 1; }
+function bgmEnabled() { return soundMode >= 2; }
+function soundIcon()  { return soundMode === 2 ? "🔊" : soundMode === 1 ? "🔉" : "🔇"; }
+function soundLabel() { return soundMode === 2 ? "🔊 전체 사운드" : soundMode === 1 ? "🔉 효과음만" : "🔇 음소거"; }
+// 오디오 컨텍스트 지연 생성 (브라우저 정책상 첫 입력 이후에만 실제로 소리가 난다)
+function ensureAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audioCtx = null; }
+  }
+  return audioCtx;
+}
 function beep(freq, dur, type, vol, slide) {
-  if (!soundOn) return;
+  if (!sfxEnabled()) return;
   try {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    const ac = ensureAudio();
+    if (!ac) return;
+    const o = ac.createOscillator(), g = ac.createGain();
     o.type = type || "square";
-    o.frequency.setValueAtTime(freq, audioCtx.currentTime);
-    if (slide) o.frequency.exponentialRampToValueAtTime(slide, audioCtx.currentTime + dur);
-    g.gain.setValueAtTime(vol || 0.04, audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
-    o.connect(g); g.connect(audioCtx.destination);
-    o.start(); o.stop(audioCtx.currentTime + dur);
+    o.frequency.setValueAtTime(freq, ac.currentTime);
+    if (slide) o.frequency.exponentialRampToValueAtTime(slide, ac.currentTime + dur);
+    g.gain.setValueAtTime(vol || 0.04, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
+    o.connect(g); g.connect(ac.destination);
+    o.start(); o.stop(ac.currentTime + dur);
   } catch (e) {}
 }
 const sfx = {
@@ -90,7 +132,104 @@ const sfx = {
   hurt:  () => beep(150, 0.3, "sawtooth", 0.06, 60),
   wave:  () => { beep(523, 0.12, "square", 0.04); setTimeout(() => beep(659, 0.12, "square", 0.04), 120); setTimeout(() => beep(784, 0.2, "square", 0.04), 240); },
   error: () => beep(180, 0.12, "sawtooth", 0.04),
+  // 👑 보스 등장 경고음 (사이렌 2회)
+  warn:  () => {
+    beep(320, 0.34, "sawtooth", 0.05, 150);
+    setTimeout(() => beep(320, 0.34, "sawtooth", 0.05, 150), 360);
+    setTimeout(() => beep(110, 0.5, "square", 0.05), 740);
+  },
+  // 🌈 20등급 합성 팡파레
+  fanfare: () => {
+    const notes = [523, 659, 784, 1047, 1319];
+    for (let i = 0; i < notes.length; i++)
+      setTimeout(() => beep(notes[i], i === notes.length - 1 ? 0.7 : 0.16, "square", 0.055), i * 110);
+    setTimeout(() => { beep(1568, 0.8, "triangle", 0.05); beep(262, 0.9, "square", 0.05); }, 560);
+  },
 };
+
+// ============================================================
+//  🎵 절차 생성 BGM — 오디오 클록 기반 lookahead 스케줄러
+//  setInterval/setTimeout 으로 음을 "찍지" 않는다.
+//  매 프레임 audioCtx.currentTime 을 보고, 앞으로 BGM_LOOKAHEAD 초 구간에
+//  들어올 음들을 오디오 클록 시각으로 미리 예약(start(t)/stop(t))한다.
+// ============================================================
+const BGM_LOOKAHEAD = 0.28;   // 초: 이만큼 앞을 미리 예약
+const BGM_STEPS = 32;         // 4마디 × 8스텝(8분음표) = 한 루프
+const BGM_ROOT = 55;          // A1(Hz) — 베이스 기준음
+const BGM_BAR_MAJ = [0, 5, 7, 5];      // 마디별 근음(반음) — 장조 진행
+const BGM_BAR_MIN = [0, -2, 3, -4];    // 마디별 근음(반음) — 단조 진행(보스)
+const BGM_ARP_MAJ = [0, 4, 7, 12, 7, 4, 7, 12];   // 아르페지오 형태(장3화음)
+const BGM_ARP_MIN = [0, 3, 7, 12, 7, 3, 7, 10];   // 아르페지오 형태(단3화음)
+const BGM_BASS_HIT = [1, 0, 0, 1, 0, 1, 0, 0];    // 8스텝 중 베이스가 울리는 위치
+
+let bgm = { on: false, nextTime: 0, step: 0, nodes: [] };
+
+function bgmBpm()     { return Math.min(140, 90 + Math.max(0, wave - 1) * 2); } // 90 → 최대 140
+function bgmMinor()   { return wave > 0 && wave % 5 === 0; }                    // 👑 보스 웨이브 = 단조
+function bgmStepDur() { return 60 / bgmBpm() / 2; }                             // 8분음표 길이(초)
+function bgmFreq(base, semi) { return base * Math.pow(2, semi / 12); }
+
+// 노트 1개를 오디오 클록 시각 t 에 정확히 예약
+function bgmNote(freq, t, dur, type, vol) {
+  const ac = audioCtx;
+  if (!ac) return;
+  try {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.012);   // 짧은 어택
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);  // 디케이
+    o.connect(g); g.connect(ac.destination);
+    o.start(t); o.stop(t + dur + 0.02);
+    bgm.nodes.push(o);
+    o.onended = function () { const i = bgm.nodes.indexOf(o); if (i >= 0) bgm.nodes.splice(i, 1); };
+  } catch (e) {}
+}
+// 8분음표 한 스텝 분량 예약
+function bgmScheduleStep(step, t) {
+  const minor = bgmMinor();
+  const bar = Math.floor(step / 8) % 4, k = step % 8;
+  const root = (minor ? BGM_BAR_MIN : BGM_BAR_MAJ)[bar];
+  const dur = bgmStepDur();
+  if (BGM_BASS_HIT[k]) bgmNote(bgmFreq(BGM_ROOT, root), t, dur * 0.9, "square", 0.045);      // 베이스(사각파)
+  bgmNote(bgmFreq(BGM_ROOT * 4, root + (minor ? BGM_ARP_MIN : BGM_ARP_MAJ)[k]), t, dur * 0.7, "triangle", 0.028); // 아르페지오(삼각파)
+  if (k === 0) bgmNote(bgmFreq(BGM_ROOT * 2, root), t, dur * 1.4, "triangle", 0.026);        // 마디 첫 박 옥타브 보강
+}
+function bgmStart() {
+  const ac = ensureAudio();
+  if (!ac) return;
+  if (ac.state === "suspended") { try { ac.resume(); } catch (e) {} }
+  bgm.on = true;
+  bgm.step = 0;
+  bgm.nextTime = ac.currentTime + 0.06;
+}
+function bgmStop() {
+  bgm.on = false;
+  const ac = audioCtx;
+  for (const o of bgm.nodes) { try { o.stop(ac ? ac.currentTime : 0); } catch (e) {} }
+  bgm.nodes.length = 0;
+}
+// 매 프레임 호출 — 오디오 클록 기준으로 lookahead 구간을 채운다
+function bgmTick() {
+  const ac = audioCtx;
+  if (!bgm.on || !ac) return;
+  const now = ac.currentTime;
+  if (bgm.nextTime < now) bgm.nextTime = now + 0.03;   // 탭 전환 등으로 밀렸으면 몰아치기 방지
+  let guard = 0;
+  while (bgm.nextTime < now + BGM_LOOKAHEAD && guard++ < 64) {
+    bgmScheduleStep(bgm.step, bgm.nextTime);
+    bgm.nextTime += bgmStepDur();
+    bgm.step = (bgm.step + 1) % BGM_STEPS;
+  }
+}
+// 상태 전환(타이틀 ↔ 플레이 ↔ 일시정지)에 따라 자동 시작/정지 — 루프에서 매 프레임 호출
+function syncBgm() {
+  const want = (state === "play") && bgmEnabled();
+  if (want && !bgm.on) bgmStart();
+  else if (!want && bgm.on) bgmStop();
+  if (bgm.on) bgmTick();
+}
 
 // ============================================================
 //  💾 저장소 (localStorage) — 파싱 실패/구버전 데이터도 안전하게 폴백
@@ -234,7 +373,7 @@ function rollEnemyKind() {
 }
 
 // ---------- 게임 상태 ----------
-let state = "title";   // title | play | over | meta | dex | card
+let state = "title";   // title | play | pause | over | meta | dex | card
 let grid, enemies, projectiles, particles, floats, effects;
 let gold, lives, wave, buyCount, kills, upg, skills, peakTier;
 let timeScale = 1;
@@ -250,6 +389,92 @@ let earnedShards = 0;      // 이번 판에서 얻은 별조각
 let newRecord = false;     // 신기록 여부
 let toast = null;          // 메뉴 화면용 안내 문구 { txt, color, until }
 let best = (function () { const n = Number(lsGet("smd_best")); return (isFinite(n) && n > 0) ? Math.floor(n) : 0; })();
+
+// ---------- ✨ Phase 3 연출/UX 상태 ----------
+let timeFreeze = 0;        // ⏱️ 히트스톱 남은 시간 (>0 이면 전투 로직만 정지)
+let combo = 0;             // 🔥 현재 콤보 수
+let comboT = 0;            // 콤보 유지 타이머 (2.5초)
+let comboPop = 0;          // 콤보 표시 팝 애니메이션
+const COMBO_WINDOW = 2.5;  // 처치 간격 이 시간 안이면 콤보 유지
+let cutin = null;          // 🌈 컷인 연출 { t, life }
+let cutinShown = false;    // 이번 판에서 20등급 컷인을 이미 봤는지
+let tooltip = null;        // 🔍 무기 툴팁 { idx }
+const TOOLTIP_HOLD = 0.4;  // 길게 누르기 판정 시간(초)
+const TOOLTIP_SLOP = 10;   // 이 거리 이상 움직이면 드래그로 간주(툴팁 취소)
+let saveData = null;       // 💾 타이틀에서 읽어둔 이어하기 스냅샷 (없으면 null)
+
+// ============================================================
+//  💾 Phase 3: 런 자동 저장 & 이어하기 (localStorage 'smd_save')
+//  웨이브 클리어 시마다 스냅샷 저장 / 게임 오버·포기 시 삭제
+//  파싱 실패·구버전 데이터는 전부 무시하고 새 게임으로 폴백
+// ============================================================
+const SAVE_KEY = "smd_save";
+function saveRun() {
+  try {
+    const g = [];
+    for (let i = 0; i < grid.length; i++) g.push(grid[i] ? grid[i].tier : 0); // 등급만 저장
+    const snap = {
+      v: 1, wave: wave, gold: gold, lives: lives, kills: kills,
+      grid: g, upg: { dmg: upg.dmg, rate: upg.rate, gold: upg.gold },
+      runBuffs: runBuffs.slice(), peakTier: peakTier, buyCount: buyCount,
+    };
+    lsSet(SAVE_KEY, JSON.stringify(snap));
+    saveData = snap;
+  } catch (e) {}
+}
+function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+  saveData = null;
+}
+// 저장 데이터 읽기 + 검증 (조금이라도 이상하면 null → 새 게임)
+function loadRun() {
+  try {
+    const raw = lsGet(SAVE_KEY);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    if (!o || typeof o !== "object") return null;
+    const num = (v, d) => { const n = Math.floor(Number(v)); return isFinite(n) ? n : d; };
+    const w = num(o.wave, 0);
+    if (!(w >= 1) || !Array.isArray(o.grid) || o.grid.length !== ROWS * COLS) return null;
+    const g = [];
+    for (const v of o.grid) {
+      const t = num(v, 0);
+      g.push(t >= 1 && t <= MAX_TIER ? t : 0);
+    }
+    const bl = [];
+    if (Array.isArray(o.runBuffs)) for (const id of o.runBuffs) if (cardById(id)) bl.push(id);
+    const u = (o.upg && typeof o.upg === "object") ? o.upg : {};
+    return {
+      v: 1, wave: w,
+      gold: Math.max(0, num(o.gold, 0)),
+      lives: Math.max(1, num(o.lives, 1)),
+      kills: Math.max(0, num(o.kills, 0)),
+      grid: g,
+      upg: { dmg: Math.max(0, num(u.dmg, 0)), rate: Math.max(0, num(u.rate, 0)), gold: Math.max(0, num(u.gold, 0)) },
+      runBuffs: bl,
+      peakTier: Math.max(1, Math.min(MAX_TIER, num(o.peakTier, 1))),
+      buyCount: Math.max(0, num(o.buyCount, 0)),
+    };
+  } catch (e) { return null; }
+}
+// 스냅샷으로 런 복원 → 해당 웨이브 시작 대기 상태로 재개
+function resumeRun(s) {
+  reset();                                  // 기본 초기화 (메타 보너스 포함)
+  wave = s.wave; gold = s.gold; lives = s.lives; kills = s.kills;
+  buyCount = s.buyCount; peakTier = s.peakTier;
+  upg = { dmg: s.upg.dmg, rate: s.upg.rate, gold: s.upg.gold };
+  runBuffs = s.runBuffs.slice();
+  grid = Array(ROWS * COLS).fill(null);
+  for (let i = 0; i < s.grid.length; i++) {
+    if (!s.grid[i]) continue;
+    // cd/pop/recoil 같은 런타임 필드는 저장하지 않고 여기서 새로 만든다
+    grid[i] = { tier: s.grid[i], cd: Math.random() * 0.5, pop: 0, recoil: 0 };
+    discover(s.grid[i]);
+  }
+  waveActive = false; waveDelay = 3; spawnQueue = 0; spawnTimer = 0; unitTimer = 0;
+  state = "play";
+  floatText(W / 2, H / 2 - 110, "💾 웨이브 " + (wave + 1) + "부터 이어서!", "#7dffb2", 26, 2);
+}
 
 // 🃏 특정 버프의 중첩 수 (없으면 0)
 function buffCount(id) {
@@ -279,6 +504,9 @@ function reset() {
   runBuffs = []; cardPick = null;
   overSettled = false; earnedShards = 0; newRecord = false;
   drag = null;
+  // ✨ Phase 3 연출/UX 상태 초기화
+  timeFreeze = 0; combo = 0; comboT = 0; comboPop = 0;
+  cutin = null; cutinShown = false; tooltip = null;
   const st = Math.max(1, Math.min(MAX_TIER, 1 + meta.tier)); // ⭐ 메타: 시작 등급
   addUnit(st); addUnit(st);
 }
@@ -510,6 +738,7 @@ function initBoss(e) {
   floatText(W / 2, H / 2 - 92, "👑 " + bt.icon + " " + bt.name, "#ff8f8f", 30, 2);
   burst(e.x, e.y + 40, "#ff6b6b", 26, 200);
   shakeT = Math.max(shakeT, 0.3);
+  sfx.warn();   // 👑 보스 등장 경고음
 }
 
 // 👑 소환사: 미니 슬라임 소환 (체력 = 보스 maxHp의 3%, 일반 적으로 취급)
@@ -591,6 +820,23 @@ function killGold(e) {
   return Math.max(2, Math.floor((5 + wave * 2) * kindMult * goldMult() * eventMult));
 }
 
+// 🔥 Phase 3: 콤보 — 처치 간격이 COMBO_WINDOW 이내면 누적, 아니면 리셋
+// (모든 처치는 killEnemy 를 거치므로 킬 경로 전체에 자동으로 걸린다)
+function addCombo() {
+  combo++;
+  comboT = COMBO_WINDOW;
+  comboPop = 1;
+  if (combo >= 5 && combo % 5 === 0) beep(500 + Math.min(combo, 40) * 14, 0.07, "square", 0.03, 900);
+  // 10콤보마다 보너스 골드 = 콤보 × 웨이브
+  if (combo % 10 === 0) {
+    const bonus = Math.max(1, combo * Math.max(1, wave));
+    gold += bonus;
+    floatText(W / 2, 178, "🔥 " + combo + "COMBO 보너스 +" + fmt(bonus) + "💰", "#ffd93d", 24, 1.4);
+    burst(W / 2, 178, "#ffd93d", 22, 190);
+    sfx.merge();
+  }
+}
+
 // ---------- 데미지 & 처치 (모든 공격이 공유) ----------
 function killEnemy(e) {
   const gi = enemies.indexOf(e);
@@ -598,9 +844,12 @@ function killEnemy(e) {
   enemies.splice(gi, 1);
   const g = killGold(e);
   gold += g; kills++;
+  addCombo();                               // 🔥 콤보 누적
   floatText(e.x, e.y - e.r - 10, "+" + g, "#ffd93d", 18);
   burst(e.x, e.y, "#c9d94f", e.boss ? 40 : 14, e.boss ? 220 : 130);
   sfx.kill();
+  // ⏱️ 보스 처치 히트스톱 0.15초 (연출용 — 파티클/플로트는 계속 흐른다)
+  if (e.boss) { timeFreeze = Math.max(timeFreeze, 0.15); shakeT = Math.max(shakeT, 0.4); }
   // 👑 보스 보상: 최고 등급 -1 무기 드랍 (칸이 없으면 골드)
   if (e.boss) {
     const t = Math.max(1, Math.min(MAX_TIER, peakTier - 1));
@@ -786,6 +1035,23 @@ function burst(x, y, color, n, spd) {
     particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 40, life: 0.5 + Math.random() * 0.4, t: 0, color, r: 2 + Math.random() * 4 });
   }
 }
+// 🌈 Phase 3: 20등급 첫 합성 컷인 — 전체 플래시 + 대형 텍스트 + 무지개 폭발 + 1초 히트스톱
+const RAINBOW = ["#ff5d5d", "#ff9b4f", "#ffe14f", "#7dffb2", "#5ad2ff", "#9a7bff", "#ff9be0"];
+function triggerJudgmentCutin(x, y) {
+  sfx.fanfare();            // 🎺 팡파레는 매번 (컷인 연출만 첫 회 한정)
+  if (cutinShown) return;
+  cutinShown = true;
+  cutin = { t: 0, life: 1.9 };
+  timeFreeze = Math.max(timeFreeze, 1.0);   // ⏱️ 1초 히트스톱
+  shakeT = Math.max(shakeT, 0.7);
+  // 무지개 파티클 폭발 (화면 중앙 + 합성 지점)
+  for (let i = 0; i < RAINBOW.length; i++) {
+    burst(W / 2, H / 2 - 40, RAINBOW[i], 26, 300 + i * 22);
+    burst(x, y, RAINBOW[i], 12, 200);
+  }
+  for (let i = 0; i < 3; i++)
+    effects.push({ type: "ring", x: W / 2, y: H / 2 - 40, maxR: 200 + i * 90, life: 0.8 + i * 0.2, t: 0, color: RAINBOW[i * 2] });
+}
 
 // ---------- 입력 ----------
 const BTN = {
@@ -797,11 +1063,19 @@ const BTN = {
   ],
   sound: { x: W - 54, y: 14, w: 42, h: 42 },
   speed: { x: W - 104, y: 14, w: 42, h: 42 },
+  pause: { x: 8,       y: 14, w: 44, h: 42 },   // ⏸ Phase 3: 일시정지
 };
 // 타이틀 / 결과 / 메뉴 화면 버튼
 const TITLE_BTN = {
+  cont: { x: 34,  y: 552, w: 412, h: 58 },      // ▶ 이어하기 (세이브가 있을 때만)
   meta: { x: 34,  y: 700, w: 196, h: 60 },
   dex:  { x: 250, y: 700, w: 196, h: 60 },
+};
+// ⏸ 일시정지 오버레이 버튼
+const PAUSE_BTN = {
+  resume:  { x: 90, y: 336, w: 300, h: 66 },
+  restart: { x: 90, y: 424, w: 300, h: 66 },
+  title:   { x: 90, y: 512, w: 300, h: 66 },
 };
 const OVER_BTN = {
   again: { x: 48,  y: 636, w: 182, h: 62 },
@@ -861,7 +1135,7 @@ function openCardPick() {
   for (let i = 0; i < 3 && bag.length; i++)
     picks.push(bag.splice(Math.floor(Math.random() * bag.length), 1)[0]);
   cardPick = { cards: picks, sel: -1, selT: 0 };
-  drag = null;                          // 드래그 중이었다면 취소
+  drag = null; tooltip = null;          // 드래그/툴팁 중이었다면 취소
   state = "card";                       // ⏸️ 전투 정지
   sfx.wave();
 }
@@ -881,6 +1155,7 @@ function applyCardPick() {
   floatText(W / 2, GRID_TOP - 180, c.icon + " " + c.name + " 획득!", "#ffd93d", 26, 1.8);
   burst(W / 2, GRID_TOP - 180, "#ffd93d", 28, 210);
   sfx.merge();
+  saveRun();   // 💾 획득한 카드까지 반영해 다시 저장
 }
 
 // ============================================================
@@ -890,6 +1165,8 @@ function gameOver() {
   if (state === "over") return;
   state = "over";
   chillLane = -1;   // ❄️ 오라 표시 해제
+  drag = null; tooltip = null; timeFreeze = 0;
+  clearSave();      // 💾 게임 오버 시 이어하기 세이브 삭제
   newRecord = false;
   if (wave > best) { best = wave; newRecord = true; lsSet("smd_best", best); }
   settleShards();
@@ -931,13 +1208,23 @@ function slotAt(p) {
 function onDown(e) {
   e.preventDefault();
   const p = ptFromEvent(e);
-  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+  const ac = ensureAudio();
+  if (ac && ac.state === "suspended") { try { ac.resume(); } catch (err) {} }
 
-  // ---- 타이틀: 영구 강화 / 도감 버튼, 그 외 영역은 게임 시작 ----
+  // ---- 타이틀: 이어하기 / 영구 강화 / 도감 버튼, 그 외 영역은 새 게임 시작 ----
   if (state === "title") {
+    if (saveData && inBtn(p, TITLE_BTN.cont)) { resumeRun(saveData); sfx.wave(); return; }
     if (inBtn(p, TITLE_BTN.meta)) { state = "meta"; toast = null; sfx.buy(); return; }
     if (inBtn(p, TITLE_BTN.dex))  { state = "dex";  toast = null; sfx.buy(); return; }
+    clearSave();                     // 새 게임 시작 = 기존 세이브 포기
     state = "play"; reset(); sfx.wave(); return;
+  }
+  // ---- ⏸ 일시정지 오버레이 ----
+  if (state === "pause") {
+    if (inBtn(p, PAUSE_BTN.resume))  { state = "play"; sfx.buy(); return; }
+    if (inBtn(p, PAUSE_BTN.restart)) { clearSave(); reset(); state = "play"; sfx.wave(); return; }
+    if (inBtn(p, PAUSE_BTN.title))   { clearSave(); state = "title"; sfx.buy(); return; }
+    return;
   }
   // ---- ⭐ 메타 상점 ----
   if (state === "meta") {
@@ -958,13 +1245,27 @@ function onDown(e) {
   }
   // ---- 결과 화면: 다시 시작 / 타이틀로 ----
   if (state === "over") {
-    if (inBtn(p, OVER_BTN.again)) { reset(); state = "play"; sfx.wave(); return; }
-    if (inBtn(p, OVER_BTN.title)) { state = "title"; return; }
+    if (inBtn(p, OVER_BTN.again)) { clearSave(); reset(); state = "play"; sfx.wave(); return; }
+    if (inBtn(p, OVER_BTN.title)) { clearSave(); state = "title"; return; }
     return;
   }
 
-  if (inBtn(p, BTN.sound)) { soundOn = !soundOn; return; }
+  // 🔊 3단 토글: 전체 ON → 효과음만 → 음소거 → 전체 ON
+  if (inBtn(p, BTN.sound)) {
+    soundMode = (soundMode + 2) % 3;
+    lsSet("smd_sound", soundMode);
+    floatText(BTN.sound.x + 21, BTN.sound.y + 62, soundLabel(), "#fff", 16, 1.1);
+    if (soundMode > 0) sfx.buy();
+    return;
+  }
   if (inBtn(p, BTN.speed)) { timeScale = timeScale === 1 ? 2 : 1; return; }
+  // ⏸ 일시정지 진입
+  if (inBtn(p, BTN.pause)) {
+    drag = null; tooltip = null;
+    state = "pause";
+    sfx.buy();
+    return;
+  }
   for (const sb of SKILL_BTNS) {
     if (Math.hypot(p.x - sb.x, p.y - sb.y) <= sb.r + 8) { useSkill(sb.key); return; }
   }
@@ -1001,17 +1302,24 @@ function onDown(e) {
     }
   }
   const idx = slotAt(p);
-  if (idx >= 0 && grid[idx]) drag = { idx, x: p.x, y: p.y };
+  // 🔍 sx/sy/hold/moved = 길게 누르기(툴팁) vs 드래그 판별용
+  if (idx >= 0 && grid[idx]) drag = { idx, x: p.x, y: p.y, sx: p.x, sy: p.y, hold: 0, moved: false };
 }
 function onMove(e) {
   e.preventDefault();
   if (!drag) return;
-  if (state !== "play") { drag = null; return; }
+  if (state !== "play") { drag = null; tooltip = null; return; }
   const p = ptFromEvent(e);
   drag.x = p.x; drag.y = p.y;
+  // 일정 거리 이상 움직이면 드래그로 확정 → 툴팁은 닫고 다시 뜨지 않는다
+  if (!drag.moved && Math.hypot(p.x - drag.sx, p.y - drag.sy) > TOOLTIP_SLOP) {
+    drag.moved = true;
+    tooltip = null;
+  }
 }
 function onUp(e) {
   e.preventDefault();
+  tooltip = null;                                // 🔍 손을 떼면 툴팁은 항상 닫힘
   if (!drag) return;
   if (state !== "play") { drag = null; return; } // 드래그 도중 상태가 바뀌면 취소
   // 🗑️ 판매 존에 놓으면 판매
@@ -1043,6 +1351,8 @@ function onUp(e) {
       burst(c.x, c.y, TIER_COLOR[nt - 1], jackpot ? 44 : 24, jackpot ? 240 : 160);
       floatText(c.x, c.y - 40, (jackpot ? "🎉 대박! " : "") + TIER_NAME[nt - 1] + " 획득!", jackpot ? "#ffd93d" : TIER_COLOR[nt - 1], jackpot ? 24 : 20, 1.2);
       sfx.merge();
+      // 🌈 20등급 첫 합성 컷인
+      if (nt >= MAX_TIER) triggerJudgmentCutin(c.x, c.y);
     } else if (b.tier === a.tier && a.tier >= MAX_TIER) {
       floatText(drag.x, drag.y - 30, "최고 등급!", "#ffd93d", 18); sfx.error();
     } else { grid[to] = a; grid[from] = b; }                           // 교환
@@ -1055,13 +1365,54 @@ window.addEventListener("mouseup", onUp);
 canvas.addEventListener("touchstart", onDown, { passive: false });
 canvas.addEventListener("touchmove", onMove, { passive: false });
 canvas.addEventListener("touchend", onUp, { passive: false });
+canvas.addEventListener("touchcancel", onUp, { passive: false });
 
 function cellCenter(idx) {
   const c = idx % COLS, r = Math.floor(idx / COLS);
   return { x: c * CELL + CELL / 2, y: GRID_TOP + r * (CELL - 8) + (CELL - 8) / 2 };
 }
+// 🔍 "실제로 움직인 드래그"인지 — 손가락만 올려둔 길게 누르기(툴팁)와 구분해 연출을 나눈다
+function dragActive() { return !!(drag && drag.moved); }
 
 // ---------- 업데이트 ----------
+// ✨ 연출 전용 갱신 (파티클·플로트·이펙트·화면 흔들림·컷인·툴팁 타이머)
+// 히트스톱 중에도 계속 흐르도록 전투 로직과 분리해 둔다
+function updateFx(dt) {
+  // 지속 이펙트 (폭발 링, 번개)
+  for (let i = effects.length - 1; i >= 0; i--) {
+    effects[i].t += dt;
+    if (effects[i].t > effects[i].life) effects.splice(i, 1);
+  }
+  // 파티클 & 텍스트
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.t += dt;
+    if (p.t > p.life) { particles.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 300 * dt;
+  }
+  for (let i = floats.length - 1; i >= 0; i--) {
+    const f = floats[i];
+    f.t += dt;
+    if (f.t > f.life) floats.splice(i, 1);
+  }
+  if (shakeT > 0) shakeT -= dt;
+  if (flashT > 0) flashT -= dt;
+  if (comboPop > 0) comboPop -= dt * 3;
+  // 🌈 컷인 진행
+  if (cutin) {
+    cutin.t += dt;
+    if (cutin.t >= cutin.life) cutin = null;
+  }
+  // 🔍 무기 툴팁: 드래그 이동 없이 TOOLTIP_HOLD 이상 누르고 있으면 표시 (실시간 기준)
+  if (drag && grid[drag.idx]) {
+    drag.hold += rawDt;
+    if (!drag.moved && !tooltip && drag.hold >= TOOLTIP_HOLD) {
+      tooltip = { idx: drag.idx };
+      beep(880, 0.05, "sine", 0.025);
+    }
+  }
+}
+
 function update(dt) {
   time += dt;
   // 🃏 카드 선택 중: 전투/타이머는 모두 정지, 선택 연출만 진행
@@ -1072,7 +1423,20 @@ function update(dt) {
     }
     return;
   }
-  if (state !== "play") return;
+  if (state !== "play") return;   // ⏸ pause / title / over 등은 전투 정지
+
+  // ⏱️ 히트스톱: 전투 로직만 정지 — 입력·렌더·파티클/플로트는 계속 살아있다
+  if (timeFreeze > 0) {
+    timeFreeze -= rawDt; // 히트스톱은 배속 무관 실시간
+    updateFx(dt);
+    return;
+  }
+
+  // 🔥 콤보 유지 타이머 (마지막 처치 후 COMBO_WINDOW 안에 못 잡으면 리셋)
+  if (combo > 0) {
+    comboT -= dt;
+    if (comboT <= 0) { combo = 0; comboT = 0; }
+  }
 
   // 웨이브 진행
   if (!waveActive) {
@@ -1095,6 +1459,7 @@ function update(dt) {
       gold += bonus;
       floatText(W / 2, H / 2 - 80, "웨이브 클리어! +" + bonus + "💰", "#ffd93d", 24, 1.5);
       waveEvent = null;   // 🎪 이벤트 상태는 웨이브 종료 시 확실히 해제
+      saveRun();          // 💾 웨이브 클리어마다 자동 저장
       // 🃏 5웨이브마다 버프 카드 3택1 (다음 웨이브 시작 전)
       if (wave % 5 === 0) { openCardPick(); return; }
     }
@@ -1339,26 +1704,8 @@ function update(dt) {
     if (remove) projectiles.splice(i, 1);
   }
 
-  // 지속 이펙트 (폭발 링, 번개)
-  for (let i = effects.length - 1; i >= 0; i--) {
-    effects[i].t += dt;
-    if (effects[i].t > effects[i].life) effects.splice(i, 1);
-  }
-
-  // 파티클 & 텍스트
-  for (let i = particles.length - 1; i >= 0; i--) {
-    const p = particles[i];
-    p.t += dt;
-    if (p.t > p.life) { particles.splice(i, 1); continue; }
-    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 300 * dt;
-  }
-  for (let i = floats.length - 1; i >= 0; i--) {
-    const f = floats[i];
-    f.t += dt;
-    if (f.t > f.life) floats.splice(i, 1);
-  }
-  if (shakeT > 0) shakeT -= dt;
-  if (flashT > 0) flashT -= dt;
+  // ✨ 연출(파티클/플로트/이펙트/컷인/툴팁) 갱신
+  updateFx(dt);
 }
 
 // ---------- 그리기 ----------
@@ -1407,8 +1754,8 @@ function drawField() {
   ctx.fillStyle = th.dark;
   ctx.fillRect(0, 0, 26, GRID_TOP);
   ctx.fillRect(W - 26, 0, 26, GRID_TOP);
-  // 드래그 중인 무기의 담당 레인 표시
-  if (drag && grid[drag.idx]) {
+  // 드래그 중인 무기의 담당 레인 표시 (실제로 움직였을 때만 — 길게 누르기(툴팁)와 구분)
+  if (dragActive() && grid[drag.idx]) {
     const col = Math.max(0, Math.min(COLS - 1, Math.floor(drag.x / CELL)));
     ctx.fillStyle = "rgba(255,255,255,0.14)";
     ctx.fillRect(col * CELL, FIELD_TOP, CELL, GRID_TOP - FIELD_TOP);
@@ -1710,7 +2057,7 @@ function drawGrid() {
   for (let i = 0; i < grid.length; i++) {
     const u = grid[i];
     if (!u) continue;
-    if (drag && drag.idx === i) continue;
+    if (dragActive() && drag.idx === i) continue;   // 들어올린 무기는 손끝에 따로 그린다
     const c = cellCenter(i);
     const s = 1 + Math.max(0, u.pop) * 0.25;
     drawUnit(c.x, c.y - Math.max(0, u.recoil) * 5, u.tier, s, 1);
@@ -1726,8 +2073,8 @@ function drawGrid() {
       outlinedText("❄", x + 15, y + 15, 17, "#e4f6ff", "rgba(20,50,80,0.75)", 3);
     }
   }
-  // 드래그 중 유닛
-  if (drag && grid[drag.idx]) {
+  // 드래그 중 유닛 (🗑️ 판매 존도 실제 드래그일 때만 표시)
+  if (dragActive() && grid[drag.idx]) {
     const u = grid[drag.idx];
     // 🗑️ 판매 존 표시
     const overTrash = Math.hypot(drag.x - TRASH.x, drag.y - TRASH.y) <= TRASH.r + 12;
@@ -1754,12 +2101,19 @@ function drawHUD() {
   // 상단 바
   ctx.fillStyle = "rgba(40,55,20,0.85)";
   ctx.fillRect(0, 0, W, 60);
-  outlinedText("💰 " + gold, 70, 30, 22, "#ffd93d", "rgba(0,0,0,0.6)", 4);
-  outlinedText("❤️ " + lives, 190, 30, 22, "#ff8f8f", "rgba(0,0,0,0.6)", 4);
-  outlinedText("웨이브 " + Math.max(wave, 1) + (wave > 0 && wave % 5 === 0 ? " 👑" : ""), 320, 30, 22, "#fff", "rgba(0,0,0,0.6)", 4);
-  // 사운드 & 배속 버튼
+  outlinedText("💰 " + gold, 106, 30, 21, "#ffd93d", "rgba(0,0,0,0.6)", 4);
+  outlinedText("❤️ " + lives, 212, 30, 21, "#ff8f8f", "rgba(0,0,0,0.6)", 4);
+  outlinedText("웨이브 " + Math.max(wave, 1) + (wave > 0 && wave % 5 === 0 ? " 👑" : ""), 316, 30, 19, "#fff", "rgba(0,0,0,0.6)", 4);
+  // ⏸ 일시정지 버튼 (좌측 끝)
+  roundRect(BTN.pause.x, BTN.pause.y + 4, BTN.pause.w, BTN.pause.h - 8, 10);
+  ctx.fillStyle = "rgba(255,255,255,0.2)"; ctx.fill();
+  ctx.font = "20px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#fff";
+  ctx.fillText("⏸", BTN.pause.x + BTN.pause.w / 2, BTN.pause.y + 21);
+  // 사운드 & 배속 버튼 (🔊 전체 / 🔉 효과음만 / 🔇 음소거)
   ctx.font = "26px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText(soundOn ? "🔊" : "🔇", BTN.sound.x + 21, BTN.sound.y + 21);
+  ctx.fillStyle = "#fff";
+  ctx.fillText(soundIcon(), BTN.sound.x + 21, BTN.sound.y + 21);
   roundRect(BTN.speed.x, BTN.speed.y + 4, BTN.speed.w, BTN.speed.h - 8, 10);
   ctx.fillStyle = timeScale === 2 ? "#ffd93d" : "rgba(255,255,255,0.2)";
   ctx.fill();
@@ -1848,6 +2202,23 @@ function drawHUD() {
     }
   }
 
+  // 🔥 콤보 카운터 (5콤보부터 표시 — 커질수록 크기·색이 변한다)
+  if (combo >= 5) {
+    const k = Math.min(1, (combo - 5) / 25);
+    const size = 24 + k * 22 + Math.max(0, comboPop) * 10;
+    const col = combo >= 40 ? "#ff4f7b" : combo >= 30 ? "#ff5d5d" : combo >= 20 ? "#ff9b4f" : combo >= 10 ? "#ffd93d" : "#fff";
+    ctx.save();
+    ctx.globalAlpha = 0.55 + Math.min(0.45, comboT / COMBO_WINDOW * 0.45);
+    outlinedText("🔥 x" + combo + " COMBO", W / 2, 112, size, col, "rgba(0,0,0,0.75)", Math.max(4, size / 5));
+    ctx.restore();
+    // 남은 콤보 시간 게이지
+    const gw = 150, gx = W / 2 - gw / 2, gy = 112 + size * 0.62;
+    ctx.fillStyle = "rgba(0,0,0,0.4)";
+    roundRect(gx, gy, gw, 5, 3); ctx.fill();
+    ctx.fillStyle = col;
+    roundRect(gx, gy, gw * Math.max(0, Math.min(1, comboT / COMBO_WINDOW)), 5, 3); ctx.fill();
+  }
+
   // 🌍 현재 테마 뱃지 (좌) / 🎪 진행 중 이벤트 뱃지 (우)
   const th = curTheme();
   outlinedText(th.icon + " " + th.name, 58, FIELD_TOP + 12, 16, "#fff", "rgba(0,0,0,0.6)", 4);
@@ -1865,6 +2236,98 @@ function drawHUD() {
     outlinedText("같은 무기를 드래그해서 합치세요!", W / 2 - 30, GRID_TOP - 154, 20, "#fff");
     outlinedText("무기는 자기 세로줄 앞의 적만 공격해요!", W / 2 - 30, GRID_TOP - 126, 18, "#ffd93d");
   }
+}
+
+// ============================================================
+//  🔍 Phase 3: 무기 툴팁 (0.4초 길게 누르기)
+// ============================================================
+function drawTooltip() {
+  if (!tooltip) return;
+  const u = grid[tooltip.idx];
+  if (!u) { tooltip = null; return; }
+  const t = u.tier, atk = ATTACK[t - 1];
+  // DPS = dmg × rate × 배수(공격력·공속 업그레이드/버프)
+  const dps = atk.dmg * atk.rate * dmgMult() * rateMult();
+  const bw = 320, bh = 136;
+  const c = cellCenter(tooltip.idx);
+  const bx = Math.max(10, Math.min(W - bw - 10, c.x - bw / 2));
+  let by = c.y - 54 - bh;
+  if (by < FIELD_TOP + 6) by = Math.min(H - bh - 10, c.y + 54);   // 위가 좁으면 아래로
+
+  ctx.save();
+  roundRect(bx, by, bw, bh, 14);
+  ctx.fillStyle = "rgba(18,24,10,0.94)"; ctx.fill();
+  ctx.strokeStyle = TIER_COLOR[t - 1]; ctx.lineWidth = 3; ctx.stroke();
+  // 아이콘
+  ctx.font = "40px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#fff";
+  ctx.fillText(TIER_EMOJI[t - 1], bx + 40, by + 44);
+  // 이름 / 등급
+  ctx.textAlign = "left";
+  ctx.font = "900 22px 'Segoe UI', 'Malgun Gothic', sans-serif";
+  ctx.fillStyle = TIER_COLOR[t - 1];
+  ctx.fillText(TIER_NAME[t - 1], bx + 74, by + 32);
+  ctx.font = "15px 'Segoe UI', 'Malgun Gothic', sans-serif";
+  ctx.fillStyle = "#ffd93d";
+  ctx.fillText(t + "등급 / " + MAX_TIER, bx + 74, by + 58);
+  // DPS
+  ctx.font = "900 19px 'Segoe UI', 'Malgun Gothic', sans-serif";
+  ctx.fillStyle = "#7dffb2";
+  ctx.fillText("DPS  " + fmt(dps), bx + 16, by + 88);
+  ctx.font = "13px 'Segoe UI', 'Malgun Gothic', sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
+  ctx.fillText("(" + fmt(atk.dmg) + " × " + atk.rate.toFixed(2) + "/s × 배수 " + (dmgMult() * rateMult()).toFixed(2) + ")", bx + 128, by + 89);
+  // 공격 방식 설명
+  ctx.font = "15px 'Segoe UI', 'Malgun Gothic', sans-serif";
+  ctx.fillStyle = "#fff";
+  ctx.fillText("⚔ " + TIER_DESC[t - 1], bx + 16, by + 116);
+  ctx.restore();
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+}
+
+// ============================================================
+//  🌈 Phase 3: 20등급 첫 합성 컷인
+// ============================================================
+function drawCutin() {
+  if (!cutin) return;
+  const k = cutin.t / cutin.life;
+  // 화면 전체 플래시 (앞부분에서 강하게)
+  const fl = Math.max(0, 1 - cutin.t / 0.45);
+  if (fl > 0) {
+    ctx.fillStyle = "rgba(255,255,255," + (fl * 0.9).toFixed(3) + ")";
+    ctx.fillRect(0, 0, W, H);
+  }
+  // 무지개 띠 배경
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, 1 - k) * 0.75;
+  const g = ctx.createLinearGradient(0, H / 2 - 110, W, H / 2 + 110);
+  for (let i = 0; i < RAINBOW.length; i++) g.addColorStop(i / (RAINBOW.length - 1), RAINBOW[i]);
+  ctx.fillStyle = g;
+  const bandH = 150 * Math.min(1, cutin.t / 0.2);
+  ctx.fillRect(0, H / 2 - 40 - bandH / 2, W, bandH);
+  ctx.restore();
+  // 대형 텍스트
+  const pop = 1 + Math.max(0, 1 - cutin.t / 0.3) * 0.6;
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, 1 - Math.max(0, k - 0.65) / 0.35);
+  outlinedText("🌈 신의 심판 강림!!", W / 2, H / 2 - 40, 42 * pop, "#fff", "rgba(40,20,80,0.9)", 14);
+  outlinedText("20등급 " + TIER_NAME[MAX_TIER - 1] + " 달성!", W / 2, H / 2 + 26, 22, "#ffd93d", "rgba(40,20,80,0.9)", 6);
+  ctx.restore();
+}
+
+// ============================================================
+//  ⏸ Phase 3: 일시정지 오버레이
+// ============================================================
+function drawPause() {
+  ctx.fillStyle = "rgba(15,20,8,0.86)";
+  ctx.fillRect(0, 0, W, H);
+  outlinedText("⏸ 일시정지", W / 2, 150, 46, "#fff", "rgba(0,0,0,0.8)", 10);
+  outlinedText("웨이브 " + Math.max(wave, 1) + " · 💰 " + fmt(gold) + " · ❤️ " + lives, W / 2, 212, 22, "#ffd93d", "rgba(0,0,0,0.7)", 5);
+  outlinedText("처치 " + kills + "마리 · 최고 등급 " + Math.max(1, Math.min(MAX_TIER, peakTier)), W / 2, 250, 18, "#fff", "rgba(0,0,0,0.7)", 4);
+  drawButton(PAUSE_BTN.resume,  "▶ 이어하기",   26, "#2f9e6e");
+  drawButton(PAUSE_BTN.restart, "🔄 다시 시작", 26, "#8e44d9");
+  drawButton(PAUSE_BTN.title,   "🏠 타이틀로",  26, "#5a6b3a");
+  outlinedText("타이틀로 나가면 이어하기 저장이 삭제돼요", W / 2, 604, 15, "rgba(255,255,255,0.7)", "rgba(0,0,0,0.6)", 3);
 }
 
 // 잔디 체크무늬 배경 (타이틀/메뉴 공용)
@@ -1909,8 +2372,16 @@ function drawTitle() {
   outlinedText("=", W / 2 + 45, 500, 30, "#fff");
   drawUnit(W / 2 + 90, 500, 2, 1.1, 1);
   const pulse = 1 + Math.sin(time * 4) * 0.05;
-  outlinedText("화면을 터치해서 시작!", W / 2, 600 + Math.sin(time * 4) * 3, 28 * pulse, "#fff");
-  if (best > 0) outlinedText("🏆 최고 기록: 웨이브 " + best, W / 2, 655, 22, "#ffd93d");
+  // 💾 이어하기 버튼 (세이브가 있을 때만) — 있으면 아래 문구를 한 단 내린다
+  const hasSave = !!saveData;
+  if (hasSave) {
+    drawButton(TITLE_BTN.cont, "▶ 이어하기 (웨이브 " + (saveData.wave + 1) + ")", 24, "#2f9e6e");
+    outlinedText("화면을 터치하면 새 게임", W / 2, 638 + Math.sin(time * 4) * 3, 24 * pulse, "#fff");
+    if (best > 0) outlinedText("🏆 최고 기록: 웨이브 " + best, W / 2, 674, 19, "#ffd93d");
+  } else {
+    outlinedText("화면을 터치해서 시작!", W / 2, 600 + Math.sin(time * 4) * 3, 28 * pulse, "#fff");
+    if (best > 0) outlinedText("🏆 최고 기록: 웨이브 " + best, W / 2, 655, 22, "#ffd93d");
+  }
   // ⭐ 영구 강화 / 📖 도감 진입 버튼
   drawButton(TITLE_BTN.meta, "⭐ 영구 강화", 21, "#8e44d9");
   drawButton(TITLE_BTN.dex,  "📖 도감 " + dex.length + "/" + MAX_TIER, 21, "#2f9e6e");
@@ -2151,6 +2622,8 @@ function draw() {
   drawGrid();
   drawHUD();
 
+  drawTooltip();   // 🔍 무기 툴팁 (격자·HUD 위)
+
   // 🎪 이벤트 웨이브 화면 테두리 (골드 러시=금색 / 러시아워=빨강 / 보물=초록)
   if (waveEvent && EVENTS[waveEvent] && state === "play") {
     ctx.save();
@@ -2175,22 +2648,28 @@ function draw() {
     ctx.fillRect(0, 0, W, H);
   }
 
+  drawCutin();                          // 🌈 20등급 컷인 (모든 연출 위)
   if (state === "card") drawCardPick(); // 🃏 카드 선택 오버레이 (전장 위에)
+  if (state === "pause") drawPause();   // ⏸ 일시정지 오버레이
   if (state === "over") drawOver();
   ctx.restore();
 }
 
 // ---------- 메인 루프 ----------
 let last = performance.now();
+let rawDt = 0; // 배속 미적용 원시 dt (툴팁 홀드/히트스톱 등 실시간 연출용)
 function loop(now) {
   const dt = Math.min((now - last) / 1000, 0.05);
   last = now;
+  rawDt = dt;
   update(dt * timeScale); // ⏩ 배속 적용
+  syncBgm();              // 🎵 상태에 맞춰 BGM 시작/정지 + 오디오 클록 lookahead 예약
   draw();
   requestAnimationFrame(loop);
 }
 reset();
 state = "title";
+saveData = loadRun();   // 💾 이어하기 세이브 확인 (깨진 데이터면 null → 새 게임)
 requestAnimationFrame(loop);
 </script>
 </body>
