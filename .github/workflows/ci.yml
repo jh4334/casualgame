@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 동일 브랜치에서 연속 push 시 이전 실행은 취소
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: 스모크 테스트 (Playwright / Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node 20 설치
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 의존성 설치 (playwright)
+        run: npm install --no-audit --no-fund
+
+      - name: Chromium 설치
+        run: npx playwright install chromium --with-deps
+
+      - name: HTML/JS 문법 검사
+        run: node tests/syntax-check.mjs
+
+      - name: 스모크 테스트
+        run: node tests/smoke.mjs

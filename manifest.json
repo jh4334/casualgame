@@ -1,0 +1,35 @@
+{
+  "name": "슬라임 머지 디펜스",
+  "short_name": "슬라임머지",
+  "description": "같은 무기를 합쳐서 강화하고, 몰려오는 슬라임을 막아내는 머지 디펜스 게임",
+  "lang": "ko",
+  "dir": "ltr",
+  "start_url": ".",
+  "scope": ".",
+  "id": "slime-merge-defense",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#a8cc3e",
+  "background_color": "#2a3d1f",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

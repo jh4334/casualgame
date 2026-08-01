@@ -14,6 +14,20 @@
 6. **5의 배수 웨이브**마다 강력한 👑 보스가 등장합니다.
 7. 최고 도달 웨이브 기록은 브라우저에 자동 저장됩니다.
 
+## 📅 일일 도전 & 🏆 기록실 (Phase 4)
+
+- **📅 일일 도전**: 날짜(`YYYYMMDD`)를 시드로 쓰는 고정 RNG(`mulberry32`)라 **같은 날엔 누구나 똑같은 판**을 플레이합니다.
+  공정성을 위해 ⭐ 영구 강화 효과는 적용되지 않고, 획득 별조각은 절반입니다.
+  같은 날 몇 번이든 재도전할 수 있고 기록은 최고 웨이브만 남습니다. 결과는 **📋 결과 복사**로 공유할 수 있어요.
+- **🏆 기록실**: 최근 최고 기록 10개를 순위·웨이브·최고 등급·날짜·📅일일 뱃지와 함께 보여줍니다. (전부 브라우저 로컬 저장)
+
+## 📱 PWA (홈 화면에 설치)
+
+`manifest.json` + `sw.js` 로 **설치형 앱 / 오프라인 실행**을 지원합니다.
+모바일 브라우저의 "홈 화면에 추가"를 누르면 주소창 없는 전체 화면으로 실행됩니다.
+서비스워커는 **https 또는 localhost 에서만** 등록되므로 `index.html` 을 `file://` 로 직접 열어도 그대로 잘 동작합니다.
+게임을 업데이트할 땐 `sw.js` 의 `CACHE_VERSION` 문자열만 올리면 새 캐시로 교체되고 구 캐시는 자동 삭제됩니다.
+
 ## 🎯 전략 요소
 
 - **업그레이드 상점**: ⚔️공격력 / ⏩공격속도 / 💰골드 획득량 강화
@@ -33,5 +47,19 @@
 
 ## 🚀 배포
 
-정적 파일 하나뿐이라 GitHub Pages로 쉽게 배포할 수 있습니다:
+정적 파일뿐이라 GitHub Pages로 쉽게 배포할 수 있습니다:
 저장소 **Settings → Pages → Deploy from a branch** 에서 기본 브랜치를 선택하면 끝!
+(`index.html` / `manifest.json` / `icon.svg` / `sw.js` 네 파일이 같은 폴더에 있으면 PWA까지 그대로 동작합니다.)
+
+## 🧪 테스트
+
+`main` push / PR 마다 GitHub Actions(`.github/workflows/ci.yml`)가 자동으로 돌아갑니다.
+
+```bash
+npm install                 # playwright 설치
+npx playwright install chromium --with-deps
+npm test                    # 문법 검사 + 스모크 테스트
+```
+
+- `tests/syntax-check.mjs` — 인라인 스크립트·`sw.js` 파싱, `manifest.json` 필수 필드, PWA 메타 태그 검사
+- `tests/smoke.mjs` — Chromium 으로 실제 플레이: 타이틀 → 시작 → 10초 빨리감기 → 구매/합성 → 시드 RNG·일일 도전·랭킹 회귀 → `file://` 실행 확인 → JS 오류 0건
