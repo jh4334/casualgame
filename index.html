@@ -4,6 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>슬라임 머지 디펜스</title>
+<!-- 📱 PWA: 설치형 앱 메타데이터 (file:// 로 열면 manifest 는 조용히 무시된다) -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#a8cc3e">
+<meta name="description" content="같은 무기를 합쳐서 강화하고, 몰려오는 슬라임을 막아내는 머지 디펜스 게임">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="슬라임머지">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -237,6 +246,36 @@ function syncBgm() {
 function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function lsSet(k, v) { try { localStorage.setItem(k, String(v)); } catch (e) {} }
 
+// ============================================================
+//  🎲 Phase 4: 시드 고정 RNG (일일 도전용)
+//  rngState 가 null 이면 rng() 는 그냥 Math.random 을 위임한다
+//  → 일반 모드는 Phase 1~3 과 완전히 동일한 난수 동작을 유지한다.
+// ============================================================
+let rngState = null;   // 시드 RNG 함수 (일일 도전 중에만 세팅)
+
+// mulberry32: 32bit 시드 하나로 재현 가능한 [0,1) 난수열을 만드는 가벼운 PRNG
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+// 게임플레이 난수 진입점 (연출용 파티클 등은 계속 Math.random 을 써도 된다)
+function rng() { return rngState ? rngState() : Math.random(); }
+
+// 로컬 타임존 기준 오늘 날짜 — 시드/표기가 항상 같은 기준을 쓰도록 한 곳에서 만든다
+function todayParts(d) {
+  const t = d || new Date();
+  return { y: t.getFullYear(), m: t.getMonth() + 1, d: t.getDate() };
+}
+function pad2(n) { return (n < 10 ? "0" : "") + n; }
+function todayStr(d) { const p = todayParts(d); return p.y + "-" + pad2(p.m) + "-" + pad2(p.d); }   // YYYY-MM-DD
+function todaySeed(d) { const p = todayParts(d); return p.y * 10000 + p.m * 100 + p.d; }            // YYYYMMDD 정수
+
 // ---------- ⭐ 영구 성장(메타) 항목 정의 ----------
 const META_ITEMS = [
   { key: "gold",  icon: "💰", name: "시작 골드", desc: "게임 시작 골드 +50",         max: 10, cost: lv => Math.floor(20  * Math.pow(1.5, lv)) },
@@ -285,6 +324,76 @@ function saveDex()    { try { lsSet("smd_dex", JSON.stringify(dex)); } catch (e)
 let shards = loadShards();      // 보유 별조각
 let meta = loadMeta();          // 영구 강화 레벨
 let dex = loadDex();            // 📖 도감: 발견한 등급 목록
+
+// ============================================================
+//  📅 Phase 4: 일일 도전 기록 (localStorage 'smd_daily')
+//  { date: "YYYY-MM-DD", bestWave: n } — 같은 날 재도전은 자유, 기록은 최고치만
+// ============================================================
+const DAILY_KEY = "smd_daily";
+function loadDaily() {
+  const d = { date: "", bestWave: 0 };
+  try {
+    const raw = lsGet(DAILY_KEY);
+    if (!raw) return d;
+    const o = JSON.parse(raw);
+    if (!o || typeof o !== "object") return d;
+    if (typeof o.date === "string") d.date = o.date;
+    const w = Math.floor(Number(o.bestWave));
+    if (isFinite(w) && w > 0) d.bestWave = w;
+  } catch (e) {}
+  return d;
+}
+function saveDaily() { try { lsSet(DAILY_KEY, JSON.stringify(dailyRec)); } catch (e) {} }
+let dailyRec = loadDaily();
+
+// ============================================================
+//  🏆 Phase 4: 로컬 랭킹 보드 (localStorage 'smd_records')
+//  [{ date, wave, kills, peakTier, daily }] — 웨이브 내림차순, 최대 10개
+// ============================================================
+const RECORDS_KEY = "smd_records";
+const RECORDS_MAX = 10;
+function loadRecords() {
+  try {
+    const raw = lsGet(RECORDS_KEY);
+    if (!raw) return [];
+    const a = JSON.parse(raw);
+    if (!Array.isArray(a)) return [];
+    const out = [];
+    for (const o of a) {
+      if (!o || typeof o !== "object") continue;
+      const w = Math.floor(Number(o.wave));
+      if (!isFinite(w) || w < 1) continue;
+      const k = Math.floor(Number(o.kills));
+      const pt = Math.floor(Number(o.peakTier));
+      out.push({
+        date: typeof o.date === "string" ? o.date : "",
+        wave: w,
+        kills: (isFinite(k) && k > 0) ? k : 0,
+        peakTier: (isFinite(pt) && pt >= 1) ? Math.min(MAX_TIER, pt) : 1,
+        daily: !!o.daily,
+      });
+      if (out.length >= RECORDS_MAX) break;
+    }
+    out.sort((a2, b2) => b2.wave - a2.wave);
+    return out;
+  } catch (e) { return []; }
+}
+function saveRecords() { try { lsSet(RECORDS_KEY, JSON.stringify(records)); } catch (e) {} }
+let records = loadRecords();
+
+// 게임 오버 1회당 정확히 1개만 push (호출은 gameOver() 안에서 단 한 번)
+function pushRecord() {
+  records.push({
+    date: todayStr(),
+    wave: wave,
+    kills: kills,
+    peakTier: Math.max(1, Math.min(MAX_TIER, peakTier)),
+    daily: dailyRun,
+  });
+  records.sort((a, b) => b.wave - a.wave);       // 웨이브 내림차순 유지
+  if (records.length > RECORDS_MAX) records.length = RECORDS_MAX;  // 10개 초과분 절삭
+  saveRecords();
+}
 
 // 📖 도감 등록 (무기를 처음 손에 넣은 순간 호출)
 function discover(tier) {
@@ -362,7 +471,7 @@ const ENEMY_ROLL = [
   { key: "balloon", minWave: 10, p: 0.10 }, // 🎈 풍선
 ];
 function rollEnemyKind() {
-  const roll = Math.random();
+  const roll = rng();
   let acc = 0;
   for (const t of ENEMY_ROLL) {
     if (wave < t.minWave) continue;   // 아직 안 나오는 타입은 구간을 차지하지 않는다
@@ -373,7 +482,7 @@ function rollEnemyKind() {
 }
 
 // ---------- 게임 상태 ----------
-let state = "title";   // title | play | pause | over | meta | dex | card
+let state = "title";   // title | play | pause | over | meta | dex | card | records
 let grid, enemies, projectiles, particles, floats, effects;
 let gold, lives, wave, buyCount, kills, upg, skills, peakTier;
 let timeScale = 1;
@@ -403,6 +512,16 @@ const TOOLTIP_HOLD = 0.4;  // 길게 누르기 판정 시간(초)
 const TOOLTIP_SLOP = 10;   // 이 거리 이상 움직이면 드래그로 간주(툴팁 취소)
 let saveData = null;       // 💾 타이틀에서 읽어둔 이어하기 스냅샷 (없으면 null)
 
+// ---------- 📅 Phase 4: 일일 도전 런 상태 ----------
+let dailyRun = false;      // 이번 런이 일일 도전인지 (메타 미적용 / 별조각 절반)
+let dailySeed = 0;         // 오늘의 시드 (YYYYMMDD)
+let dailyDate = "";        // 오늘 날짜 문자열 (YYYY-MM-DD)
+let dailyNewRecord = false;// 이번 일일 런이 오늘의 최고 기록을 갱신했는지
+let dailyCopied = false;   // 📋 결과 복사 완료 표시
+
+// ⭐ 메타 레벨 조회 — 일일 도전에서는 공정성을 위해 전부 0으로 취급(미적용)
+function metaLv(k) { return dailyRun ? 0 : (meta[k] || 0); }
+
 // ============================================================
 //  💾 Phase 3: 런 자동 저장 & 이어하기 (localStorage 'smd_save')
 //  웨이브 클리어 시마다 스냅샷 저장 / 게임 오버·포기 시 삭제
@@ -410,6 +529,7 @@ let saveData = null;       // 💾 타이틀에서 읽어둔 이어하기 스냅
 // ============================================================
 const SAVE_KEY = "smd_save";
 function saveRun() {
+  if (dailyRun) return;   // 📅 일일 도전은 이어하기 대상이 아니다 (일반 모드 세이브도 보존)
   try {
     const g = [];
     for (let i = 0; i < grid.length; i++) g.push(grid[i] ? grid[i].tier : 0); // 등급만 저장
@@ -459,6 +579,7 @@ function loadRun() {
 }
 // 스냅샷으로 런 복원 → 해당 웨이브 시작 대기 상태로 재개
 function resumeRun(s) {
+  dailyRun = false; rngState = null;        // 이어하기는 언제나 일반 모드
   reset();                                  // 기본 초기화 (메타 보너스 포함)
   wave = s.wave; gold = s.gold; lives = s.lives; kills = s.kills;
   buyCount = s.buyCount; peakTier = s.peakTier;
@@ -486,14 +607,14 @@ function buffCount(id) {
 function aoeMult()     { return 1 + buffCount("aoe25") * 0.25; }
 function burnDurMult() { return buffCount("burn2") ? 2 : 1; }
 function jackChance()  { return 0.12 * (buffCount("jack2") ? 2 : 1); }
-// ⏳ 메타 "스킬 단련" 적용 쿨다운
-function skillCd(k) { return (k === "meteor" ? 30 : 25) * (1 - meta.cdr * 0.05); }
+// ⏳ 메타 "스킬 단련" 적용 쿨다운 (📅 일일 도전에서는 metaLv 가 0 → 미적용)
+function skillCd(k) { return (k === "meteor" ? 30 : 25) * (1 - metaLv("cdr") * 0.05); }
 
 function reset() {
   grid = Array(ROWS * COLS).fill(null);
   enemies = []; projectiles = []; particles = []; floats = []; effects = [];
-  gold = 150 + meta.gold * 50;          // ⭐ 메타: 시작 골드
-  lives = 10 + meta.lives;              // ⭐ 메타: 생명
+  gold = 150 + metaLv("gold") * 50;     // ⭐ 메타: 시작 골드 (📅 일일 도전은 미적용)
+  lives = 10 + metaLv("lives");         // ⭐ 메타: 생명 (📅 일일 도전은 미적용)
   wave = 0; buyCount = 0; kills = 0;
   upg = { dmg: 0, rate: 0, gold: 0 };
   skills = { meteor: 0, freeze: 0 };
@@ -507,8 +628,41 @@ function reset() {
   // ✨ Phase 3 연출/UX 상태 초기화
   timeFreeze = 0; combo = 0; comboT = 0; comboPop = 0;
   cutin = null; cutinShown = false; tooltip = null;
-  const st = Math.max(1, Math.min(MAX_TIER, 1 + meta.tier)); // ⭐ 메타: 시작 등급
+  // 📅 Phase 4: 일일 도전 결과 표시 상태 초기화
+  dailyNewRecord = false; dailyCopied = false;
+  const st = Math.max(1, Math.min(MAX_TIER, 1 + metaLv("tier"))); // ⭐ 메타: 시작 등급 (📅 일일 도전은 미적용)
   addUnit(st); addUnit(st);
+}
+
+// ============================================================
+//  ▶ Phase 4: 런 시작/재시작/종료 헬퍼 (일반 모드 ↔ 일일 도전 전환 지점)
+//  reset() 안에서 metaLv()/rng() 를 쓰므로 모드 플래그와 시드는 reset() 전에 세팅한다.
+// ============================================================
+function startNormalRun() {
+  dailyRun = false; rngState = null;   // 일반 모드 = 기존 Math.random 경로 그대로
+  reset();
+  state = "play";
+}
+function startDailyRun() {
+  dailyRun = true;
+  dailySeed = todaySeed();             // 로컬 타임존 기준 YYYYMMDD
+  dailyDate = todayStr();
+  rngState = mulberry32(dailySeed);    // 🎲 오늘의 시드로 고정
+  reset();
+  state = "play";
+  floatText(W / 2, H / 2 - 110, "📅 일일 도전 " + dailyDate, "#9ad8ff", 26, 2.2);
+}
+// 🔄 현재 모드 그대로 다시 시작 (일일 도전이면 같은 시드로 재도전)
+function restartRun() {
+  if (dailyRun) { startDailyRun(); return; }
+  clearSave();                          // 일반 모드에서만 이어하기 세이브를 포기한다
+  startNormalRun();
+}
+// 🏠 타이틀 복귀 — 일일 도전 중이었다면 일반 모드 세이브는 건드리지 않는다
+function exitToTitle() {
+  if (!dailyRun) clearSave();
+  dailyRun = false; rngState = null;
+  state = "title";
 }
 
 function buyCost() { return Math.floor(30 * Math.pow(1.13, buyCount)); }
@@ -548,11 +702,11 @@ function rollBuyTier() {
     1.5 + lvl * 0.08,            // 9등급
     2.2 + lvl * 0.05,            // 10등급 (웨이브1 ~2.5%)
   ];
-  // ⭐ 메타 "행운": 6~10등급 구간 가중치 상승
-  const luck = 1 + meta.luck * 0.08;
+  // ⭐ 메타 "행운": 6~10등급 구간 가중치 상승 (📅 일일 도전은 미적용)
+  const luck = 1 + metaLv("luck") * 0.08;
   for (let t = 5; t <= 9; t++) weights[t] *= luck;
   const total = weights.reduce((a, b) => a + b, 0);
-  let r = Math.random() * total;
+  let r = rng() * total;
   for (let t = 0; t < weights.length; t++) {
     r -= weights[t];
     if (r <= 0) return spawnTier(t + 1);
@@ -570,8 +724,8 @@ function addUnit(tier) {
   const empty = [];
   for (let i = 0; i < grid.length; i++) if (!grid[i]) empty.push(i);
   if (!empty.length) return false;
-  const idx = empty[Math.floor(Math.random() * empty.length)];
-  grid[idx] = { tier, cd: Math.random() * 0.5, pop: 1, recoil: 0 };
+  const idx = empty[Math.floor(rng() * empty.length)];
+  grid[idx] = { tier, cd: rng() * 0.5, pop: 1, recoil: 0 };
   peakTier = Math.max(peakTier, tier);
   discover(tier); // 📖 도감 등록
   return true;
@@ -630,8 +784,8 @@ function startWave() {
   }
 
   // 🎪 이벤트 웨이브: 보스 웨이브 제외, 10% 확률, 서로 배타적으로 1종만
-  if (wave % 5 !== 0 && Math.random() < 0.10) {
-    waveEvent = EVENT_KEYS[Math.floor(Math.random() * EVENT_KEYS.length)];
+  if (wave % 5 !== 0 && rng() < 0.10) {
+    waveEvent = EVENT_KEYS[Math.floor(rng() * EVENT_KEYS.length)];
     const ev = EVENTS[waveEvent];
     if (waveEvent === "rush") spawnQueue *= 2;        // 🌊 적 수 2배
     if (waveEvent === "treasure") spawnTreasure();    // 🎁 웨이브 중 1마리
@@ -654,7 +808,7 @@ function spawnEnemy() {
   const isShield = kind === "shield";  // 🛡️ 방패병
   const isGhost  = kind === "ghost";   // 👻 유령
 
-  let hp = enemyBaseHp() * (0.85 + Math.random() * 0.4);
+  let hp = enemyBaseHp() * (0.85 + rng() * 0.4);
   if (isBoss)   hp *= 17;
   if (isFast)   hp *= 0.55;
   if (isTank)   hp *= 2.6;
@@ -663,16 +817,16 @@ function spawnEnemy() {
   if (isGhost)  hp *= 0.7;
   hp = Math.max(1, Math.round(hp * themeHpMult()));   // 🌍 테마 기믹: 체력 곱연산
 
-  const spd = (isBoss ? 17 : (isFast ? 50 : 28) + Math.random() * 15)
+  const spd = (isBoss ? 17 : (isFast ? 50 : 28) + rng() * 15)
             * (isTank ? 0.55 : 1) * (isHealer ? 0.8 : 1) * (isGhost ? 1.1 : 1)
             * Math.pow(1.02, wave) * themeSpeedMult();  // 🌍 테마 기믹: 속도 곱연산
 
   const e = {
-    x: 60 + Math.random() * (W - 120),
+    x: 60 + rng() * (W - 120),
     y: FIELD_TOP - 40,
     hp, maxHp: hp,
     speed: spd,
-    r: isBoss ? 46 : (isFast ? 20 : (isTank ? 34 : (isGhost ? 24 : 26 + Math.random() * 6))),
+    r: isBoss ? 46 : (isFast ? 20 : (isTank ? 34 : (isGhost ? 24 : 26 + rng() * 6))),
     boss: isBoss, fast: isFast, tank: isTank, split: isSplit,
     healer: isHealer, shield: isShield, ghost: isGhost, balloon: false, treasure: false,
     shieldHits: isShield ? 5 : 0,   // 🛡️ 첫 5회 타격 무효
@@ -692,13 +846,13 @@ function spawnEnemy() {
 
 // 🎈 풍선: 한 번에 3~5마리가 묶음으로 내려온다 (체력 1 / 아주 빠름 / 작음)
 function spawnBalloonFlock() {
-  const n = 3 + Math.floor(Math.random() * 3);
+  const n = 3 + Math.floor(rng() * 3);
   for (let i = 0; i < n; i++) {
     enemies.push({
-      x: 45 + Math.random() * (W - 90),
+      x: 45 + rng() * (W - 90),
       y: FIELD_TOP - 40 - i * 26,
       hp: 1, maxHp: 1,                                 // 아무 공격이든 1방
-      speed: (28 + Math.random() * 15) * 1.9 * Math.pow(1.02, wave) * themeSpeedMult(),
+      speed: (28 + rng() * 15) * 1.9 * Math.pow(1.02, wave) * themeSpeedMult(),
       r: 26 * 0.7,
       boss: false, fast: false, tank: false, split: false,
       healer: false, shield: false, ghost: false, balloon: true, treasure: false,
@@ -713,14 +867,14 @@ function spawnBalloonFlock() {
 // 🎁 보물 슬라임: 방어선으로 내려오지 않고 좌우로 도망다니다 8초 후 사라진다
 function spawnTreasure() {
   const hp = Math.max(1, Math.round(enemyBaseHp() * 1.2 * themeHpMult()));
-  const y = FIELD_TOP + 90 + Math.random() * 70;
+  const y = FIELD_TOP + 90 + rng() * 70;
   enemies.push({
     x: W / 2, y, homeY: y,
     hp, maxHp: hp,
     speed: 0, r: 24,
     boss: false, fast: false, tank: false, split: false,
     healer: false, shield: false, ghost: false, balloon: false, treasure: true,
-    tvx: (Math.random() < 0.5 ? -1 : 1) * 200,  // 좌우 도주 속도
+    tvx: (rng() < 0.5 ? -1 : 1) * 200,  // 좌우 도주 속도
     tlife: 8,                                   // 8초 후 도주
     shieldHits: 0, healT: 0, ghostT: 0, ghostInvuln: false, chargeT: 0,
     wob: Math.random() * Math.PI * 2,
@@ -747,7 +901,7 @@ function summonMinion(b, dir) {
   enemies.push({
     x: Math.max(24, Math.min(W - 24, b.x + dir * 36)), y: b.y + 12,
     hp: mhp, maxHp: mhp,
-    speed: (34 + Math.random() * 14) * Math.pow(1.02, wave) * themeSpeedMult(),
+    speed: (34 + rng() * 14) * Math.pow(1.02, wave) * themeSpeedMult(),
     r: 19,
     boss: false, fast: false, tank: false, split: false,
     healer: false, shield: false, ghost: false, balloon: false, treasure: false,
@@ -1067,9 +1221,11 @@ const BTN = {
 };
 // 타이틀 / 결과 / 메뉴 화면 버튼
 const TITLE_BTN = {
-  cont: { x: 34,  y: 552, w: 412, h: 58 },      // ▶ 이어하기 (세이브가 있을 때만)
-  meta: { x: 34,  y: 700, w: 196, h: 60 },
-  dex:  { x: 250, y: 700, w: 196, h: 60 },
+  cont:  { x: 34,  y: 520, w: 412, h: 56 },     // ▶ 이어하기 (세이브가 있을 때만)
+  daily: { x: 34,  y: 652, w: 196, h: 56 },     // 📅 Phase 4: 일일 도전
+  recs:  { x: 250, y: 652, w: 196, h: 56 },     // 🏆 Phase 4: 기록실
+  meta:  { x: 34,  y: 718, w: 196, h: 56 },
+  dex:   { x: 250, y: 718, w: 196, h: 56 },
 };
 // ⏸ 일시정지 오버레이 버튼
 const PAUSE_BTN = {
@@ -1080,6 +1236,7 @@ const PAUSE_BTN = {
 const OVER_BTN = {
   again: { x: 48,  y: 636, w: 182, h: 62 },
   title: { x: 250, y: 636, w: 182, h: 62 },
+  copy:  { x: 120, y: 712, w: 240, h: 50 },     // 📋 Phase 4: 일일 도전 결과 복사 (일일 런에서만 표시)
 };
 const BACK_BTN = { x: W / 2 - 92, y: H - 92, w: 184, h: 58 };
 // 🃏 버프 카드 3장 배치
@@ -1091,6 +1248,8 @@ function cardRect(i) {
 function metaRowRect(i) { return { x: 20, y: 158 + i * 104, w: W - 40, h: 94 }; }
 function metaBuyRect(i) { const r = metaRowRect(i); return { x: r.x + r.w - 132, y: r.y + 19, w: 118, h: 56 }; }
 // 📖 도감 칸 위치 (4열 x 5행)
+// 🏆 기록실 행 위치 (최대 10줄)
+function recordRowRect(i) { return { x: 24, y: 130 + i * 58, w: W - 48, h: 54 }; }
 function dexCellRect(i) {
   const c = i % 4, r = Math.floor(i / 4);
   return { x: 25 + c * 110, y: 150 + r * 98, w: 100, h: 88 };
@@ -1109,8 +1268,8 @@ function useSkill(k) {
     const dmg = Math.round(enemyBaseHp() * 2.5); // 웨이브에 비례한 위력
     const shots = 6 + buffCount("meteor2") * 2;  // 🃏 유성우
     for (let i = 0; i < shots; i++) {
-      const tg = enemies[Math.floor(Math.random() * enemies.length)];
-      projectiles.push({ kind: "star", x: tg.x + (Math.random() - 0.5) * 120, y: tg.y - 380, tx: tg.x + (Math.random() - 0.5) * 40, ty: tg.y, speed: 900, dmg, tier: 8, aoe: 95, rot: Math.random() * 6 });
+      const tg = enemies[Math.floor(rng() * enemies.length)];
+      projectiles.push({ kind: "star", x: tg.x + (rng() - 0.5) * 120, y: tg.y - 380, tx: tg.x + (rng() - 0.5) * 40, ty: tg.y, speed: 900, dmg, tier: 8, aoe: 95, rot: Math.random() * 6 });
     }
     floatText(W / 2, H / 2 - 140, "☄️ 메테오!", "#ff9b4f", 30, 1.2);
     shakeT = 0.25;
@@ -1133,7 +1292,7 @@ function openCardPick() {
   if (!pool.length) return;            // 뽑을 카드가 없으면 그냥 진행
   const bag = pool.slice(), picks = [];
   for (let i = 0; i < 3 && bag.length; i++)
-    picks.push(bag.splice(Math.floor(Math.random() * bag.length), 1)[0]);
+    picks.push(bag.splice(Math.floor(rng() * bag.length), 1)[0]);
   cardPick = { cards: picks, sel: -1, selT: 0 };
   drag = null; tooltip = null;          // 드래그/툴팁 중이었다면 취소
   state = "card";                       // ⏸️ 전투 정지
@@ -1166,17 +1325,45 @@ function gameOver() {
   state = "over";
   chillLane = -1;   // ❄️ 오라 표시 해제
   drag = null; tooltip = null; timeFreeze = 0;
-  clearSave();      // 💾 게임 오버 시 이어하기 세이브 삭제
+  if (!dailyRun) clearSave();   // 💾 게임 오버 시 이어하기 세이브 삭제 (일일 도전은 세이브 자체가 없음)
   newRecord = false;
-  if (wave > best) { best = wave; newRecord = true; lsSet("smd_best", best); }
+  // 🏆 통합 최고 기록은 일반 모드만 갱신 (일일 도전은 별도 기록을 쓴다)
+  if (!dailyRun && wave > best) { best = wave; newRecord = true; lsSet("smd_best", best); }
+  if (dailyRun) settleDaily();
   settleShards();
+  pushRecord();   // 🏆 로컬 랭킹: 게임 오버 1회당 정확히 1개
 }
 function settleShards() {
   if (overSettled) return;              // 중복 지급 방지 플래그
   overSettled = true;
   earnedShards = Math.max(0, Math.floor(wave * 2 + kills / 20));
+  if (dailyRun) earnedShards = Math.floor(earnedShards / 2);   // 📅 일일 도전은 별조각 절반
   shards += earnedShards;
   saveShards();
+}
+// 📅 오늘의 기록 갱신 — 같은 날 재도전은 자유롭고, 저장되는 건 최고 웨이브 하나뿐
+function settleDaily() {
+  dailyNewRecord = false;
+  if (dailyRec.date !== dailyDate) dailyRec = { date: dailyDate, bestWave: 0 }; // 날짜가 바뀌면 초기화
+  if (wave > dailyRec.bestWave) {
+    dailyRec.bestWave = wave;
+    dailyNewRecord = true;
+    saveDaily();
+  }
+}
+// 📋 결과 복사 (클립보드 권한이 없거나 실패하면 조용히 무시)
+function copyDailyResult() {
+  const txt = "슬라임 머지 디펜스 일일도전 " + dailyDate + " — 웨이브 " + wave + " 도달! 🌈";
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(
+        function () { dailyCopied = true; toastMsg("📋 결과를 복사했어요!", "#7dffb2"); },
+        function () { toastMsg("복사에 실패했어요", "#ff8f8f"); }
+      );
+      return;
+    }
+  } catch (e) {}
+  toastMsg("이 브라우저에서는 복사를 지원하지 않아요", "#ffd93d");
 }
 
 // ⭐ 메타 상점 구매
@@ -1214,16 +1401,18 @@ function onDown(e) {
   // ---- 타이틀: 이어하기 / 영구 강화 / 도감 버튼, 그 외 영역은 새 게임 시작 ----
   if (state === "title") {
     if (saveData && inBtn(p, TITLE_BTN.cont)) { resumeRun(saveData); sfx.wave(); return; }
+    if (inBtn(p, TITLE_BTN.daily)) { startDailyRun(); sfx.wave(); return; }   // 📅 일일 도전
+    if (inBtn(p, TITLE_BTN.recs))  { state = "records"; toast = null; sfx.buy(); return; }
     if (inBtn(p, TITLE_BTN.meta)) { state = "meta"; toast = null; sfx.buy(); return; }
     if (inBtn(p, TITLE_BTN.dex))  { state = "dex";  toast = null; sfx.buy(); return; }
     clearSave();                     // 새 게임 시작 = 기존 세이브 포기
-    state = "play"; reset(); sfx.wave(); return;
+    startNormalRun(); sfx.wave(); return;
   }
   // ---- ⏸ 일시정지 오버레이 ----
   if (state === "pause") {
     if (inBtn(p, PAUSE_BTN.resume))  { state = "play"; sfx.buy(); return; }
-    if (inBtn(p, PAUSE_BTN.restart)) { clearSave(); reset(); state = "play"; sfx.wave(); return; }
-    if (inBtn(p, PAUSE_BTN.title))   { clearSave(); state = "title"; sfx.buy(); return; }
+    if (inBtn(p, PAUSE_BTN.restart)) { restartRun(); sfx.wave(); return; }
+    if (inBtn(p, PAUSE_BTN.title))   { exitToTitle(); sfx.buy(); return; }
     return;
   }
   // ---- ⭐ 메타 상점 ----
@@ -1237,6 +1426,11 @@ function onDown(e) {
     if (inBtn(p, BACK_BTN)) { state = "title"; sfx.buy(); }
     return;
   }
+  // ---- 🏆 기록실 (로컬 랭킹 보드) ----
+  if (state === "records") {
+    if (inBtn(p, BACK_BTN)) { state = "title"; sfx.buy(); }
+    return;
+  }
   // ---- 🃏 버프 카드 선택 ----
   if (state === "card") {
     if (!cardPick) { state = "play"; return; }
@@ -1245,8 +1439,10 @@ function onDown(e) {
   }
   // ---- 결과 화면: 다시 시작 / 타이틀로 ----
   if (state === "over") {
-    if (inBtn(p, OVER_BTN.again)) { clearSave(); reset(); state = "play"; sfx.wave(); return; }
-    if (inBtn(p, OVER_BTN.title)) { clearSave(); state = "title"; return; }
+    // 📋 일일 도전 결과 복사 (일일 런에서만 노출)
+    if (dailyRun && inBtn(p, OVER_BTN.copy)) { copyDailyResult(); sfx.buy(); return; }
+    if (inBtn(p, OVER_BTN.again)) { restartRun(); sfx.wave(); return; }
+    if (inBtn(p, OVER_BTN.title)) { exitToTitle(); return; }
     return;
   }
 
@@ -1342,7 +1538,7 @@ function onUp(e) {
     else if (b.tier === a.tier && a.tier < MAX_TIER) {                 // 합성!
       let nt = a.tier + 1, jackpot = false;
       // 🎉 12% 확률 2단계 점프 (🃏 대박 체질이면 24%)
-      if (nt < MAX_TIER && Math.random() < jackChance()) { nt++; jackpot = true; }
+      if (nt < MAX_TIER && rng() < jackChance()) { nt++; jackpot = true; }
       grid[to] = { tier: nt, cd: 0, pop: 1, recoil: 0 };
       grid[from] = null;
       peakTier = Math.max(peakTier, nt);
@@ -1448,7 +1644,7 @@ function update(dt) {
       if (spawnTimer <= 0) {
         spawnEnemy();
         spawnQueue--;
-        spawnTimer = Math.max(0.3, 1.3 - wave * 0.05) * (0.7 + Math.random() * 0.6);
+        spawnTimer = Math.max(0.3, 1.3 - wave * 0.05) * (0.7 + rng() * 0.6);
       }
     } else if (enemies.length === 0) {
       waveActive = false;
@@ -2376,16 +2572,65 @@ function drawTitle() {
   const hasSave = !!saveData;
   if (hasSave) {
     drawButton(TITLE_BTN.cont, "▶ 이어하기 (웨이브 " + (saveData.wave + 1) + ")", 24, "#2f9e6e");
-    outlinedText("화면을 터치하면 새 게임", W / 2, 638 + Math.sin(time * 4) * 3, 24 * pulse, "#fff");
-    if (best > 0) outlinedText("🏆 최고 기록: 웨이브 " + best, W / 2, 674, 19, "#ffd93d");
+    outlinedText("화면을 터치하면 새 게임", W / 2, 604 + Math.sin(time * 4) * 3, 24 * pulse, "#fff");
+    if (best > 0) outlinedText("🏆 최고 기록: 웨이브 " + best, W / 2, 636, 19, "#ffd93d");
   } else {
-    outlinedText("화면을 터치해서 시작!", W / 2, 600 + Math.sin(time * 4) * 3, 28 * pulse, "#fff");
-    if (best > 0) outlinedText("🏆 최고 기록: 웨이브 " + best, W / 2, 655, 22, "#ffd93d");
+    outlinedText("화면을 터치해서 시작!", W / 2, 570 + Math.sin(time * 4) * 3, 28 * pulse, "#fff");
+    if (best > 0) outlinedText("🏆 최고 기록: 웨이브 " + best, W / 2, 620, 22, "#ffd93d");
   }
+  // 📅 일일 도전 / 🏆 기록실 진입 버튼 (Phase 4)
+  const dToday = (dailyRec.date === todayStr() && dailyRec.bestWave > 0) ? " " + dailyRec.bestWave : "";
+  drawButton(TITLE_BTN.daily, "📅 일일 도전" + dToday, 20, "#3d7fb8");
+  drawButton(TITLE_BTN.recs,  "🏆 기록실 " + records.length + "/" + RECORDS_MAX, 20, "#b8873d");
   // ⭐ 영구 강화 / 📖 도감 진입 버튼
-  drawButton(TITLE_BTN.meta, "⭐ 영구 강화", 21, "#8e44d9");
-  drawButton(TITLE_BTN.dex,  "📖 도감 " + dex.length + "/" + MAX_TIER, 21, "#2f9e6e");
-  outlinedText("보유 별조각  ⭐ " + shards, W / 2, 796, 22, "#ffd93d", "rgba(60,80,20,0.9)", 5);
+  drawButton(TITLE_BTN.meta, "⭐ 영구 강화", 20, "#8e44d9");
+  drawButton(TITLE_BTN.dex,  "📖 도감 " + dex.length + "/" + MAX_TIER, 20, "#2f9e6e");
+  outlinedText("보유 별조각  ⭐ " + shards, W / 2, 800, 22, "#ffd93d", "rgba(60,80,20,0.9)", 5);
+}
+
+// ============================================================
+//  🏆 기록실 (로컬 랭킹 보드) — Phase 4
+// ============================================================
+function drawRecords() {
+  drawGrassBg();
+  ctx.fillStyle = "rgba(20,25,10,0.72)";
+  ctx.fillRect(0, 0, W, H);
+  outlinedText("🏆 기록실", W / 2, 58, 36, "#ffd93d", "rgba(0,0,0,0.8)", 8);
+  outlinedText("최근 최고 기록 " + records.length + " / " + RECORDS_MAX, W / 2, 102, 20, "#fff", "rgba(0,0,0,0.7)", 5);
+
+  if (!records.length) {
+    outlinedText("아직 기록이 없어요", W / 2, 300, 26, "rgba(255,255,255,0.75)", "rgba(0,0,0,0.6)", 5);
+    outlinedText("한 판 플레이하면 여기에 남아요!", W / 2, 340, 18, "rgba(255,255,255,0.55)", "rgba(0,0,0,0.6)", 4);
+    drawBackAndToast();
+    return;
+  }
+
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i], r = recordRowRect(i);
+    const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : String(i + 1);
+    roundRect(r.x, r.y, r.w, r.h, 12);
+    ctx.fillStyle = i < 3 ? "rgba(255,217,61,0.16)" : "rgba(255,255,255,0.07)";
+    ctx.fill();
+    ctx.strokeStyle = i < 3 ? "rgba(255,217,61,0.55)" : "rgba(255,255,255,0.16)";
+    ctx.lineWidth = 2; ctx.stroke();
+
+    // 순위
+    outlinedText(medal, r.x + 34, r.y + r.h / 2, i < 3 ? 26 : 20, "#fff", "rgba(0,0,0,0.7)", 4);
+    // 웨이브
+    outlinedText("웨이브 " + rec.wave, r.x + 132, r.y + r.h / 2 - 8, 21, "#ffd93d", "rgba(0,0,0,0.7)", 4);
+    outlinedText(rec.kills + "마리 처치", r.x + 132, r.y + r.h / 2 + 15, 13, "rgba(255,255,255,0.8)", "rgba(0,0,0,0.6)", 3);
+    // 최고 등급 이모지
+    const pt = Math.max(1, Math.min(MAX_TIER, rec.peakTier));
+    ctx.font = "26px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = "#fff";
+    ctx.fillText(TIER_EMOJI[pt - 1], r.x + 244, r.y + r.h / 2 - 6);
+    outlinedText(pt, r.x + 244, r.y + r.h / 2 + 16, 12, TIER_COLOR[pt - 1], "rgba(0,0,0,0.7)", 3);
+    // 날짜 + 📅 일일 뱃지
+    outlinedText(rec.date || "-", r.x + r.w - 62, r.y + r.h / 2 - 8, 14, "rgba(255,255,255,0.85)", "rgba(0,0,0,0.6)", 3);
+    if (rec.daily) outlinedText("📅 일일", r.x + r.w - 62, r.y + r.h / 2 + 14, 13, "#9ad8ff", "rgba(0,0,0,0.6)", 3);
+  }
+  ctx.textAlign = "center";
+  drawBackAndToast();
 }
 
 // ============================================================
@@ -2557,6 +2802,8 @@ function drawOver() {
   ctx.fillStyle = "rgba(20,25,10,0.88)";
   ctx.fillRect(0, 0, W, H);
   outlinedText("게임 오버", W / 2, 92, 50, "#ff6b6b", "rgba(0,0,0,0.8)", 10);
+  // 📅 일일 도전 표식 (날짜 포함)
+  if (dailyRun) outlinedText("📅 일일 도전  " + dailyDate, W / 2, 126, 18, "#9ad8ff", "rgba(0,0,0,0.7)", 4);
 
   outlinedText("도달 웨이브  " + wave, W / 2, 158, 28, "#fff");
   outlinedText("처치한 슬라임  " + kills + "마리", W / 2, 198, 22, "#fff");
@@ -2570,8 +2817,15 @@ function drawOver() {
   outlinedText("+" + earnedShards + " ⭐", W / 2 - 46, 288, 26, "#ffd93d");
   outlinedText("(보유 " + shards + ")", W / 2 + 62, 289, 17, "#fff");
 
-  if (newRecord) outlinedText("🏆 신기록 달성!", W / 2, 340, 26, "#ffd93d");
-  else outlinedText("🏆 최고 기록: 웨이브 " + best, W / 2, 340, 20, "#ffd93d");
+  // 📅 일일 도전이면 오늘의 기록을, 일반 모드면 통합 최고 기록을 보여준다
+  if (dailyRun) {
+    if (dailyNewRecord) outlinedText("📅 오늘의 신기록!", W / 2, 340, 26, "#9ad8ff");
+    else outlinedText("📅 오늘의 기록: 웨이브 " + dailyRec.bestWave, W / 2, 340, 20, "#9ad8ff");
+  } else if (newRecord) {
+    outlinedText("🏆 신기록 달성!", W / 2, 340, 26, "#ffd93d");
+  } else {
+    outlinedText("🏆 최고 기록: 웨이브 " + best, W / 2, 340, 20, "#ffd93d");
+  }
 
   // 🃏 획득 버프 요약
   if (runBuffs.length) {
@@ -2589,9 +2843,21 @@ function drawOver() {
   outlinedText("최종 진형", W / 2, 410, 18, "#fff");
   drawSnapshot(W / 2, 430);
 
-  drawButton(OVER_BTN.again, "🔄 다시 시작", 22, "#8e44d9");
+  drawButton(OVER_BTN.again, dailyRun ? "🔄 오늘 재도전" : "🔄 다시 시작", 22, "#8e44d9");
   drawButton(OVER_BTN.title, "🏠 타이틀로", 22, "#5a6b3a");
-  outlinedText("⭐ 영구 강화로 더 강해질 수 있어요!", W / 2, 730, 17, "#ffd93d");
+  if (dailyRun) {
+    // 📋 결과 복사 (일일 도전 전용)
+    drawButton(OVER_BTN.copy, dailyCopied ? "✅ 복사 완료" : "📋 결과 복사", 20, "#2f9e6e");
+    outlinedText("일일 도전은 영구 강화가 적용되지 않고 별조각은 절반이에요", W / 2, 782, 13, "rgba(255,255,255,0.72)");
+  } else {
+    outlinedText("⭐ 영구 강화로 더 강해질 수 있어요!", W / 2, 730, 17, "#ffd93d");
+  }
+  // 안내 문구 (복사 결과 등)
+  if (toast && time < toast.until) {
+    ctx.globalAlpha = Math.min(1, (toast.until - time) * 2.5);
+    outlinedText(toast.txt, W / 2, 600, 19, toast.color, "rgba(0,0,0,0.7)", 4);
+    ctx.globalAlpha = 1;
+  }
 }
 
 function draw() {
@@ -2602,6 +2868,7 @@ function draw() {
   if (state === "title") { drawTitle(); ctx.restore(); return; }
   if (state === "meta")  { drawMeta();  ctx.restore(); return; }
   if (state === "dex")   { drawDex();   ctx.restore(); return; }
+  if (state === "records") { drawRecords(); ctx.restore(); return; }
 
   drawField();
   // 적 (아래쪽이 위에 그려지도록 정렬)
@@ -2667,10 +2934,28 @@ function loop(now) {
   draw();
   requestAnimationFrame(loop);
 }
+dailyRun = false; rngState = null;   // 부팅 시엔 항상 일반 모드 (Math.random 경로)
 reset();
 state = "title";
 saveData = loadRun();   // 💾 이어하기 세이브 확인 (깨진 데이터면 null → 새 게임)
 requestAnimationFrame(loop);
+
+// ============================================================
+//  📱 Phase 4: 서비스워커 등록 (PWA 오프라인 지원)
+//  https / localhost 에서만 등록한다 — file:// 로 열어도 절대 깨지지 않도록 가드
+// ============================================================
+(function registerServiceWorker() {
+  try {
+    if (!("serviceWorker" in navigator)) return;
+    const host = location.hostname;
+    const secure = location.protocol === "https:" ||
+                   host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+    if (!secure) return;   // file:// · http:// 원격은 등록 자체를 시도하지 않는다
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("sw.js").catch(function () {});  // 실패해도 게임은 그대로 동작
+    });
+  } catch (e) {}
+})();
 </script>
 </body>
 </html>

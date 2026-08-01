@@ -1,0 +1,15 @@
+{
+  "name": "slime-merge-defense",
+  "version": "4.0.0",
+  "private": true,
+  "description": "슬라임 머지 디펜스 — 순수 Canvas/JS 단일 파일 머지 디펜스 게임 (개발용 테스트 도구 정의)",
+  "type": "module",
+  "scripts": {
+    "check": "node tests/syntax-check.mjs",
+    "smoke": "node tests/smoke.mjs",
+    "test": "npm run check && npm run smoke"
+  },
+  "devDependencies": {
+    "playwright": "1.49.1"
+  }
+}
