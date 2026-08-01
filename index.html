@@ -173,12 +173,74 @@ const CARD_POOL = [
 ];
 function cardById(id) { for (const c of CARD_POOL) if (c.id === id) return c; return null; }
 
+// ============================================================
+//  🌍 스테이지 테마 (10웨이브마다 순환) — Phase 2
+//  hp/speed = 적 스탯 곱연산 기믹, rate = 무기 공속 곱연산 기믹
+// ============================================================
+const THEMES = [
+  { icon: "🌱", name: "초원", light: "#a8cc3e", dark: "#8db32e", hp: 1,    speed: 1,   rate: 1,   desc: "평화로운 기본 전장" },
+  { icon: "🏜️", name: "사막", light: "#d9c77a", dark: "#c9b25e", hp: 1,    speed: 1.1, rate: 1,   desc: "적 이동속도 +10%" },
+  { icon: "🌋", name: "화산", light: "#8a5a4a", dark: "#7a4a3a", hp: 1.15, speed: 1,   rate: 1,   desc: "적 체력 +15%" },
+  { icon: "❄️", name: "설원", light: "#c8dce8", dark: "#b0c8da", hp: 1,    speed: 1,   rate: 0.9, desc: "무기 공격속도 -10%" },
+  { icon: "🌌", name: "우주", light: "#3a3a5e", dark: "#2e2e4e", hp: 1.1,  speed: 1.1, rate: 1,   desc: "적 속도 +10% & 체력 +10%" },
+];
+function themeIndex()    { return Math.floor((Math.max(1, wave) - 1) / 10) % THEMES.length; }
+function curTheme()      { return THEMES[themeIndex()]; }
+function themeHpMult()   { return curTheme().hp; }
+function themeSpeedMult(){ return curTheme().speed; }
+function themeRateMult() { return curTheme().rate; }
+
+// ============================================================
+//  🎪 이벤트 웨이브 (웨이브 시작 시 10%, 보스 웨이브 제외) — Phase 2
+// ============================================================
+const EVENTS = {
+  gold:     { icon: "💰", name: "골드 러시",   desc: "이번 웨이브 처치 골드 3배!",     color: "#ffd93d", border: "#ffd93d" },
+  rush:     { icon: "🌊", name: "러시아워",    desc: "적 2배! 클리어 보너스 3배!",     color: "#ff8f8f", border: "#ff5555" },
+  treasure: { icon: "🎁", name: "보물 슬라임", desc: "도망가기 전에 잡으면 무기 드랍!", color: "#7dffb2", border: "#7dffb2" },
+};
+const EVENT_KEYS = ["gold", "rush", "treasure"];
+
+// ============================================================
+//  👑 보스 패턴 3종 — 스폰 시 (wave/5) % 3 으로 로테이션 — Phase 2
+// ============================================================
+const BOSS_TYPES = [
+  { key: "summoner", icon: "🔮", name: "소환사" },
+  { key: "charger",  icon: "💨", name: "돌진왕" },
+  { key: "chiller",  icon: "❄️", name: "빙결왕" },
+];
+
+// ============================================================
+//  🎲 적 타입 룰렛 — 우선순위 순서대로 누적 확률 구간을 배정하므로 서로 겹치지 않는다
+//  (웨이브 조건을 못 채운 타입은 구간을 아예 차지하지 않음)
+// ============================================================
+const ENEMY_ROLL = [
+  { key: "fast",    minWave: 8,  p: 0.22 }, // 🏃 빠른 돌진형
+  { key: "tank",    minWave: 6,  p: 0.12 }, // 🛡 탱커
+  { key: "split",   minWave: 10, p: 0.12 }, // 🟢 분열형
+  { key: "healer",  minWave: 12, p: 0.10 }, // 💚 힐러
+  { key: "shield",  minWave: 14, p: 0.10 }, // 🛡️ 방패병
+  { key: "ghost",   minWave: 16, p: 0.08 }, // 👻 유령
+  { key: "balloon", minWave: 10, p: 0.10 }, // 🎈 풍선
+];
+function rollEnemyKind() {
+  const roll = Math.random();
+  let acc = 0;
+  for (const t of ENEMY_ROLL) {
+    if (wave < t.minWave) continue;   // 아직 안 나오는 타입은 구간을 차지하지 않는다
+    acc += t.p;
+    if (roll < acc) return t.key;
+  }
+  return "normal";
+}
+
 // ---------- 게임 상태 ----------
 let state = "title";   // title | play | over | meta | dex | card
 let grid, enemies, projectiles, particles, floats, effects;
 let gold, lives, wave, buyCount, kills, upg, skills, peakTier;
 let timeScale = 1;
 let spawnQueue, spawnTimer, waveDelay, waveActive, unitTimer;
+let waveEvent = null;  // 🎪 이번 웨이브의 이벤트 키 (없으면 null) — 웨이브 종료 시 해제
+let chillLane = -1;    // ❄️ 빙결왕이 점거한 레인 (없으면 -1)
 let shakeT = 0, flashT = 0, time = 0;
 let drag = null;       // {idx, x, y}
 let runBuffs = [];     // 🃏 이번 판에서 획득한 버프 카드 id 목록 (중첩 시 중복 저장)
@@ -212,6 +274,7 @@ function reset() {
   skills = { meteor: 0, freeze: 0 };
   peakTier = 1;
   spawnQueue = 0; spawnTimer = 0; waveDelay = 2; waveActive = false; unitTimer = 0;
+  waveEvent = null; chillLane = -1;      // 🎪/❄️ Phase 2 상태 초기화
   shakeT = 0; flashT = 0;
   runBuffs = []; cardPick = null;
   overSettled = false; earnedShards = 0; newRecord = false;
@@ -325,38 +388,208 @@ function fmt(n) {
 function startWave() {
   wave++;
   waveActive = true;
+  waveEvent = null;                       // 🎪 지난 웨이브 이벤트는 여기서도 확실히 해제
   spawnQueue = 9 + Math.floor(wave * 1.6);
   spawnTimer = 0.5;
   sfx.wave();
-  floatText(W / 2, H / 2 - 120, wave % 5 === 0 ? "👑 보스 웨이브 " + wave : "웨이브 " + wave, "#fff", 30, 1.4);
+  floatText(W / 2, H / 2 - 130, wave % 5 === 0 ? "👑 보스 웨이브 " + wave : "웨이브 " + wave, "#fff", 30, 1.4);
+
+  // 🌍 테마 전환 안내 (10웨이브 단위 진입 웨이브에서만)
+  if ((wave - 1) % 10 === 0) {
+    const th = curTheme();
+    floatText(W / 2, H / 2 - 72, th.icon + " " + th.name + " 테마 돌입!", "#fff", 27, 2.4);
+    floatText(W / 2, H / 2 - 38, th.desc, "#ffd93d", 18, 2.4);
+  }
+
+  // 🎪 이벤트 웨이브: 보스 웨이브 제외, 10% 확률, 서로 배타적으로 1종만
+  if (wave % 5 !== 0 && Math.random() < 0.10) {
+    waveEvent = EVENT_KEYS[Math.floor(Math.random() * EVENT_KEYS.length)];
+    const ev = EVENTS[waveEvent];
+    if (waveEvent === "rush") spawnQueue *= 2;        // 🌊 적 수 2배
+    if (waveEvent === "treasure") spawnTreasure();    // 🎁 웨이브 중 1마리
+    floatText(W / 2, H / 2 + 14, ev.icon + " " + ev.name + "!", ev.color, 30, 2.4);
+    floatText(W / 2, H / 2 + 48, ev.desc, "#fff", 18, 2.4);
+    sfx.merge();
+  }
 }
 function enemyBaseHp() { return 26 * Math.pow(1.32, wave - 1); }
 
 function spawnEnemy() {
   const isBoss = (wave % 5 === 0) && spawnQueue === 1; // 5의 배수 웨이브 마지막은 보스
-  const roll = Math.random();
-  const isFast  = !isBoss && wave >= 8 && roll < 0.22;                     // 빠른 돌진형 (빨간 꽃)
-  const isTank  = !isBoss && wave >= 6 && roll >= 0.18 && roll < 0.30;     // 탱커 (파란 꽃)
-  const isSplit = !isBoss && wave >= 10 && roll >= 0.30 && roll < 0.42;    // 분열형 (초록 꽃)
+  const kind = isBoss ? "boss" : rollEnemyKind();      // 🎲 서로 겹치지 않는 누적 확률 룰렛
+  if (kind === "balloon") { spawnBalloonFlock(); return; } // 🎈 스폰 큐 1 소모로 무리 생성
+
+  const isFast   = kind === "fast";    // 빠른 돌진형 (빨간 꽃)
+  const isTank   = kind === "tank";    // 탱커 (파란 꽃)
+  const isSplit  = kind === "split";   // 분열형 (초록 꽃)
+  const isHealer = kind === "healer";  // 💚 힐러
+  const isShield = kind === "shield";  // 🛡️ 방패병
+  const isGhost  = kind === "ghost";   // 👻 유령
+
   let hp = enemyBaseHp() * (0.85 + Math.random() * 0.4);
-  if (isBoss) hp *= 17;
-  if (isFast) hp *= 0.55;
-  if (isTank) hp *= 2.6;
-  hp = Math.round(hp);
-  enemies.push({
+  if (isBoss)   hp *= 17;
+  if (isFast)   hp *= 0.55;
+  if (isTank)   hp *= 2.6;
+  if (isHealer) hp *= 0.8;
+  if (isShield) hp *= 1.2;
+  if (isGhost)  hp *= 0.7;
+  hp = Math.max(1, Math.round(hp * themeHpMult()));   // 🌍 테마 기믹: 체력 곱연산
+
+  const spd = (isBoss ? 17 : (isFast ? 50 : 28) + Math.random() * 15)
+            * (isTank ? 0.55 : 1) * (isHealer ? 0.8 : 1) * (isGhost ? 1.1 : 1)
+            * Math.pow(1.02, wave) * themeSpeedMult();  // 🌍 테마 기믹: 속도 곱연산
+
+  const e = {
     x: 60 + Math.random() * (W - 120),
     y: FIELD_TOP - 40,
     hp, maxHp: hp,
-    speed: (isBoss ? 17 : (isFast ? 50 : 28) + Math.random() * 15) * (isTank ? 0.55 : 1) * Math.pow(1.02, wave),
-    r: isBoss ? 46 : (isFast ? 20 : (isTank ? 34 : 26 + Math.random() * 6)),
+    speed: spd,
+    r: isBoss ? 46 : (isFast ? 20 : (isTank ? 34 : (isGhost ? 24 : 26 + Math.random() * 6))),
     boss: isBoss, fast: isFast, tank: isTank, split: isSplit,
+    healer: isHealer, shield: isShield, ghost: isGhost, balloon: false, treasure: false,
+    shieldHits: isShield ? 5 : 0,   // 🛡️ 첫 5회 타격 무효
+    healT: isHealer ? 2 : 0,        // 💚 2초 주기 회복
+    ghostT: isGhost ? 2 : 0,        // 👻 실체 2초 ↔ 무적 1.2초
+    ghostInvuln: false,
+    chargeT: 0,
     wob: Math.random() * Math.PI * 2,
     hitT: 0, burn: null, frozen: 0,
-    flower: isFast ? "#ff6b6b" : isTank ? "#7ba8ff" : isSplit ? "#8fd14f" : (Math.random() < 0.5 ? "#ffb7d5" : "#fff"),
+    flower: isFast ? "#ff6b6b" : isTank ? "#7ba8ff" : isSplit ? "#8fd14f"
+          : isHealer ? "#4fd9a8" : isShield ? "#c0c8d8" : isGhost ? "#b8a8e8"
+          : (Math.random() < 0.5 ? "#ffb7d5" : "#fff"),
+  };
+  if (isBoss) initBoss(e);
+  enemies.push(e);
+}
+
+// 🎈 풍선: 한 번에 3~5마리가 묶음으로 내려온다 (체력 1 / 아주 빠름 / 작음)
+function spawnBalloonFlock() {
+  const n = 3 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < n; i++) {
+    enemies.push({
+      x: 45 + Math.random() * (W - 90),
+      y: FIELD_TOP - 40 - i * 26,
+      hp: 1, maxHp: 1,                                 // 아무 공격이든 1방
+      speed: (28 + Math.random() * 15) * 1.9 * Math.pow(1.02, wave) * themeSpeedMult(),
+      r: 26 * 0.7,
+      boss: false, fast: false, tank: false, split: false,
+      healer: false, shield: false, ghost: false, balloon: true, treasure: false,
+      shieldHits: 0, healT: 0, ghostT: 0, ghostInvuln: false, chargeT: 0,
+      wob: Math.random() * Math.PI * 2,
+      hitT: 0, burn: null, frozen: 0,
+      flower: "#ffd0e8",
+    });
+  }
+}
+
+// 🎁 보물 슬라임: 방어선으로 내려오지 않고 좌우로 도망다니다 8초 후 사라진다
+function spawnTreasure() {
+  const hp = Math.max(1, Math.round(enemyBaseHp() * 1.2 * themeHpMult()));
+  const y = FIELD_TOP + 90 + Math.random() * 70;
+  enemies.push({
+    x: W / 2, y, homeY: y,
+    hp, maxHp: hp,
+    speed: 0, r: 24,
+    boss: false, fast: false, tank: false, split: false,
+    healer: false, shield: false, ghost: false, balloon: false, treasure: true,
+    tvx: (Math.random() < 0.5 ? -1 : 1) * 200,  // 좌우 도주 속도
+    tlife: 8,                                   // 8초 후 도주
+    shieldHits: 0, healT: 0, ghostT: 0, ghostInvuln: false, chargeT: 0,
+    wob: Math.random() * Math.PI * 2,
+    hitT: 0, burn: null, frozen: 0,
+    flower: "#ffd93d",
   });
 }
 
-function killGold(e) { return Math.max(2, Math.floor((5 + wave * 2) * (e.boss ? 10 : e.mini ? 0.5 : 1) * goldMult())); }
+// 👑 보스 패턴 배정 + 등장 연출
+function initBoss(e) {
+  const bt = BOSS_TYPES[Math.floor(wave / 5) % BOSS_TYPES.length];
+  e.bossType = bt.key;
+  e.summonT = 3;      // 소환사: 3초마다 소환
+  e.chargeStage = 0;  // 돌진왕: 넘어선 체력 문턱 수
+  floatText(W / 2, H / 2 - 92, "👑 " + bt.icon + " " + bt.name, "#ff8f8f", 30, 2);
+  burst(e.x, e.y + 40, "#ff6b6b", 26, 200);
+  shakeT = Math.max(shakeT, 0.3);
+}
+
+// 👑 소환사: 미니 슬라임 소환 (체력 = 보스 maxHp의 3%, 일반 적으로 취급)
+function summonMinion(b, dir) {
+  const mhp = Math.max(1, Math.round(b.maxHp * 0.03));
+  enemies.push({
+    x: Math.max(24, Math.min(W - 24, b.x + dir * 36)), y: b.y + 12,
+    hp: mhp, maxHp: mhp,
+    speed: (34 + Math.random() * 14) * Math.pow(1.02, wave) * themeSpeedMult(),
+    r: 19,
+    boss: false, fast: false, tank: false, split: false,
+    healer: false, shield: false, ghost: false, balloon: false, treasure: false,
+    shieldHits: 0, healT: 0, ghostT: 0, ghostInvuln: false, chargeT: 0,
+    wob: Math.random() * Math.PI * 2,
+    hitT: 0, burn: null, frozen: 0,
+    flower: "#b04fd9",
+  });
+}
+
+// 👑 보스 패턴 갱신 (빙결왕은 updateChillLane / laneRateMult 에서 처리)
+function updateBoss(e, dt) {
+  if (e.bossType === "summoner") {
+    e.summonT -= dt;
+    if (e.summonT <= 0) {
+      e.summonT = 3;
+      summonMinion(e, -1); summonMinion(e, 1);
+      burst(e.x, e.y, "#b04fd9", 20, 170);
+      floatText(e.x, e.y - e.r - 34, "🔮 소환!", "#d9a0ff", 20, 0.9);
+      sfx.merge();
+    }
+  } else if (e.bossType === "charger") {
+    // 체력이 75/50/25% 문턱을 넘길 때마다 1.2초 질주
+    const TH = [0.75, 0.5, 0.25], ratio = e.hp / e.maxHp;
+    while (e.chargeStage < TH.length && ratio <= TH[e.chargeStage]) {
+      e.chargeStage++;
+      e.chargeT = 1.2;
+      shakeT = Math.max(shakeT, 0.45);
+      floatText(e.x, e.y - e.r - 34, "💨 돌진!", "#ff6b6b", 24, 1);
+      burst(e.x, e.y, "#ff6b6b", 18, 190);
+      sfx.hurt();
+    }
+  }
+  if (e.chargeT > 0) e.chargeT -= dt;
+}
+
+// ❄️ 빙결왕 오라: 보스가 선 레인(±1칸) 무기의 공속을 30% 깎는다
+function updateChillLane() {
+  chillLane = -1;
+  for (const e of enemies) {
+    if (e.boss && e.bossType === "chiller") {
+      chillLane = Math.max(0, Math.min(COLS - 1, Math.floor(e.x / CELL)));
+      break;
+    }
+  }
+}
+function isChilled(col) { return chillLane >= 0 && Math.abs(col - chillLane) <= 1; }
+// 레인별 공속 배율: 🌍 테마 기믹 × ❄️ 빙결왕 오라
+function laneRateMult(col) { return themeRateMult() * (isChilled(col) ? 0.7 : 1); }
+
+// 💚 힐러: 반경 120 내의 다른 슬라임을 자기 maxHp의 8%만큼 회복
+function healPulse(h) {
+  const amount = h.maxHp * 0.08;
+  let healed = 0;
+  for (const o of enemies) {
+    if (o === h || o.hp <= 0 || o.hp >= o.maxHp) continue;
+    if (Math.hypot(o.x - h.x, o.y - h.y) > 120) continue;
+    o.hp = Math.min(o.maxHp, o.hp + amount);
+    healed++;
+    floatText(o.x, o.y - o.r - 8, "+" + fmt(amount), "#4fd9a8", 15, 0.7);
+    burst(o.x, o.y, "#4fd9a8", 6, 100);
+  }
+  if (healed) effects.push({ type: "ring", x: h.x, y: h.y, maxR: 120, life: 0.4, t: 0, color: "#4fd9a8" });
+}
+
+// 처치 골드 (🎈 풍선 0.4배 / 💰 골드 러시 3배)
+function killGold(e) {
+  const kindMult = e.boss ? 10 : e.mini ? 0.5 : e.balloon ? 0.4 : 1;
+  const eventMult = waveEvent === "gold" ? 3 : 1;
+  return Math.max(2, Math.floor((5 + wave * 2) * kindMult * goldMult() * eventMult));
+}
 
 // ---------- 데미지 & 처치 (모든 공격이 공유) ----------
 function killEnemy(e) {
@@ -381,6 +614,19 @@ function killEnemy(e) {
       floatText(W / 2, H / 2 - 60, "👑 보스 보상! +" + fmt(bg) + "💰", "#ffd93d", 26, 1.8);
     }
   }
+  // 🎁 보물 슬라임 보상: 최고 등급 -2 무기 드랍 (최소 1등급 / 칸이 없으면 골드)
+  if (e.treasure) {
+    const t = Math.max(1, Math.min(MAX_TIER, peakTier - 2));
+    if (addUnit(t)) {
+      floatText(W / 2, H / 2 - 60, "🎁 보물! " + t + "등급 " + TIER_NAME[t - 1] + "!", "#7dffb2", 26, 1.8);
+      burst(W / 2, H / 2 - 60, "#7dffb2", 30, 220);
+      sfx.wave();
+    } else {
+      const bg = Math.floor(120 * (1 + wave / 4) * goldMult());
+      gold += bg;
+      floatText(W / 2, H / 2 - 60, "🎁 보물! +" + fmt(bg) + "💰", "#7dffb2", 26, 1.8);
+    }
+  }
   // 분열형: 죽으면 미니 슬라임 2마리로 쪼개짐
   if (e.split) {
     for (let k = -1; k <= 1; k += 2) {
@@ -390,14 +636,35 @@ function killEnemy(e) {
         hp: mhp, maxHp: mhp,
         speed: e.speed * 1.35, r: Math.max(14, e.r * 0.68),
         boss: false, fast: false, tank: false, split: false, mini: true,
+        healer: false, shield: false, ghost: false, balloon: false, treasure: false,
+        shieldHits: 0, healT: 0, ghostT: 0, ghostInvuln: false, chargeT: 0,
         wob: Math.random() * Math.PI * 2, hitT: 0, burn: null, frozen: 0,
         flower: "#8fd14f",
       });
     }
   }
 }
+// silent = 화상 등 지속 피해 (타격 판정이 아니므로 방패를 소모하지 않고 관통한다)
 function damageEnemy(e, dmg, silent) {
   if (e.hp <= 0 || enemies.indexOf(e) === -1) return;
+  // 👻 유령: 무적 위상 동안 모든 데미지 무효 (화상 포함)
+  if (e.ghostInvuln) {
+    if (!silent) {
+      e.hitT = 0;
+      floatText(e.x, e.y - e.r - 8, "무효", "#b8a8e8", 16, 0.6);
+      burst(e.x, e.y, "#b8a8e8", 4, 80);
+    }
+    return;
+  }
+  // 🛡️ 방패병: 첫 5회 "타격"을 무효화 (지속 피해는 그대로 통과)
+  if (e.shieldHits > 0 && !silent) {
+    e.shieldHits--;
+    e.hitT = 0.12;
+    floatText(e.x, e.y - e.r - 8, "막음!", "#dfe4ee", 17, 0.7);
+    burst(e.x, e.y - e.r * 0.3, "#c0c8d8", 7, 120);
+    sfx.error();
+    return;
+  }
   e.hp -= dmg;
   if (!silent) e.hitT = 0.12;
   if (e.hp <= 0) killEnemy(e);
@@ -622,6 +889,7 @@ function applyCardPick() {
 function gameOver() {
   if (state === "over") return;
   state = "over";
+  chillLane = -1;   // ❄️ 오라 표시 해제
   newRecord = false;
   if (wave > best) { best = wave; newRecord = true; lsSet("smd_best", best); }
   settleShards();
@@ -822,9 +1090,11 @@ function update(dt) {
       waveActive = false;
       waveDelay = 3; // 합성할 여유 시간
 
-      const bonus = Math.floor((30 + wave * 18) * goldMult());
+      // 🌊 러시아워는 클리어 보너스 3배
+      const bonus = Math.floor((30 + wave * 18) * goldMult() * (waveEvent === "rush" ? 3 : 1));
       gold += bonus;
       floatText(W / 2, H / 2 - 80, "웨이브 클리어! +" + bonus + "💰", "#ffd93d", 24, 1.5);
+      waveEvent = null;   // 🎪 이벤트 상태는 웨이브 종료 시 확실히 해제
       // 🃏 5웨이브마다 버프 카드 3택1 (다음 웨이브 시작 전)
       if (wave % 5 === 0) { openCardPick(); return; }
     }
@@ -854,10 +1124,47 @@ function update(dt) {
     if (e.frozen > 0) e.frozen -= dt;
     const slow = e.frozen > 0 ? 0.3 : 1; // ❄️ 빙결 시 감속
     e.wob += dt * 4 * slow;
-    e.y += e.speed * slow * dt;
-    e.x += Math.sin(e.wob) * 12 * dt;
-    e.x = Math.max(e.r, Math.min(W - e.r, e.x));
     if (e.hitT > 0) e.hitT -= dt;
+
+    // 👻 유령: 실체(2초) ↔ 무적(1.2초) 반복 — 무적 중에도 이동은 계속
+    if (e.ghost) {
+      e.ghostT -= dt;
+      if (e.ghostT <= 0) {
+        e.ghostInvuln = !e.ghostInvuln;
+        e.ghostT = e.ghostInvuln ? 1.2 : 2;
+        burst(e.x, e.y, "#b8a8e8", 8, 90);
+      }
+    }
+    // 💚 힐러: 2초마다 주변 회복
+    if (e.healer) {
+      e.healT -= dt;
+      if (e.healT <= 0) { e.healT = 2; healPulse(e); }
+    }
+    // 👑 보스 고유 패턴
+    if (e.boss) updateBoss(e, dt);
+
+    if (e.treasure) {
+      // 🎁 보물 슬라임: 좌우로만 도망다니고 방어선으로는 내려오지 않는다
+      e.tlife -= dt;
+      e.x += e.tvx * slow * dt;
+      if (e.x < 40)     { e.x = 40;     e.tvx = Math.abs(e.tvx); }
+      if (e.x > W - 40) { e.x = W - 40; e.tvx = -Math.abs(e.tvx); }
+      e.y = e.homeY + Math.sin(e.wob * 1.4) * 14;
+      if (Math.random() < dt * 14)
+        particles.push({ x: e.x + (Math.random() - 0.5) * e.r * 2, y: e.y, vx: (Math.random() - 0.5) * 40, vy: -50, life: 0.4, t: 0, color: "#ffd93d", r: 2 + Math.random() * 3 });
+      if (e.tlife <= 0) { // 도주 (방어선 피해 없음)
+        enemies.splice(i, 1);
+        floatText(e.x, e.y - 20, "🎁 도망쳤다!", "#ffd93d", 22, 1.2);
+        burst(e.x, e.y, "#ffd93d", 18, 170);
+        continue;
+      }
+    } else {
+      const rush = e.chargeT > 0 ? 4 : 1;  // 👑 돌진왕 질주
+      e.y += e.speed * slow * rush * dt;
+      e.x += Math.sin(e.wob) * 12 * dt;
+      e.x = Math.max(e.r, Math.min(W - e.r, e.x));
+    }
+
     // 화상 지속 피해
     if (e.burn && e.burn.t > 0) {
       e.burn.t -= dt;
@@ -865,7 +1172,7 @@ function update(dt) {
       damageEnemy(e, e.burn.dps * dt, true);
       if (enemies.indexOf(e) === -1) continue;
     }
-    if (e.y > GRID_TOP - e.r - 20) {   // 방어선 도달
+    if (!e.treasure && e.y > GRID_TOP - e.r - 20) {   // 방어선 도달 (보물 슬라임 제외)
       enemies.splice(i, 1);
       lives -= e.boss ? 3 : 1;
       shakeT = 0.35; flashT = 0.3;
@@ -879,6 +1186,7 @@ function update(dt) {
   }
 
   // 유닛 공격
+  updateChillLane(); // ❄️ 빙결왕 오라 레인 갱신 (매 프레임 1회)
   for (let i = 0; i < grid.length; i++) {
     const u = grid[i];
     if (!u) continue;
@@ -890,7 +1198,8 @@ function update(dt) {
       const targets = laneEnemies(i % COLS, atk.count || 1); // 자기 열 앞의 적만
       if (targets.length) {
         fireWeapon(u.tier, cellCenter(i), targets);
-        u.cd = 1 / (atk.rate * rateMult()); // ⏩ 공속 업그레이드 적용
+        // ⏩ 공속 업그레이드 + 🌍 테마 기믹 + ❄️ 빙결왕 오라
+        u.cd = 1 / (atk.rate * rateMult() * laneRateMult(i % COLS));
         u.recoil = 1;
       }
     }
@@ -1074,16 +1383,28 @@ function outlinedText(txt, x, y, size, fill, stroke, lw) {
 }
 
 function drawField() {
-  // 잔디 배경 (체크무늬)
-  ctx.fillStyle = "#a8cc3e";
+  // 🌍 배경 (체크무늬) — 색상은 현재 스테이지 테마 팔레트에서 취득
+  const th = curTheme();
+  ctx.fillStyle = th.light;
   ctx.fillRect(0, 0, W, GRID_TOP);
   const cs = 60;
   ctx.fillStyle = "rgba(255,255,255,0.06)";
   for (let y = 0; y < GRID_TOP / cs + 1; y++)
     for (let x = 0; x < W / cs; x++)
       if ((x + y) % 2 === 0) ctx.fillRect(x * cs, y * cs, cs, Math.min(cs, GRID_TOP - y * cs));
-  // 양옆 진한 잔디 길 표현
-  ctx.fillStyle = "#8db32e";
+  // 🌌 우주 테마: 잔잔한 별빛 (좌표는 고정 패턴)
+  if (th.name === "우주") {
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    for (let i = 0; i < 46; i++) {
+      const sx = (i * 97) % (W - 60) + 30, sy = (i * 151) % (GRID_TOP - 40) + 20;
+      const tw = 0.4 + Math.abs(Math.sin(time * 1.6 + i)) * 0.6;
+      ctx.globalAlpha = tw * 0.8;
+      ctx.fillRect(sx, sy, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+  }
+  // 양옆 진한 길 표현
+  ctx.fillStyle = th.dark;
   ctx.fillRect(0, 0, 26, GRID_TOP);
   ctx.fillRect(W - 26, 0, 26, GRID_TOP);
   // 드래그 중인 무기의 담당 레인 표시
@@ -1106,14 +1427,27 @@ function drawField() {
 
 function drawEnemy(e) {
   const squish = 1 + Math.sin(e.wob * 2) * 0.06;
+  // 💚 힐러 오라 링 (몸통 스케일 영향을 받지 않도록 먼저 그린다)
+  if (e.healer) {
+    ctx.save();
+    ctx.globalAlpha = 0.22 + Math.abs(Math.sin(time * 4)) * 0.18;
+    ctx.strokeStyle = "#4fd9a8"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(e.x, e.y, e.r * 1.55, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
   ctx.save();
   ctx.translate(e.x, e.y);
+  // 👻 유령: 무적 위상 동안 반투명
+  if (e.ghostInvuln) ctx.globalAlpha = 0.35;
   // 그림자
   ctx.fillStyle = "rgba(0,0,0,0.15)";
   ctx.beginPath(); ctx.ellipse(0, e.r * 0.85, e.r * 0.9, e.r * 0.3, 0, 0, Math.PI * 2); ctx.fill();
   ctx.scale(squish, 2 - squish);
-  // 몸통 (노란 블롭, 빙결 시 하늘색, 탱커는 카키색)
-  const bodyCol = e.hitT > 0 ? "#fff" : (e.frozen > 0 ? "#b8dcf0" : e.boss ? "#e8d44f" : e.tank ? "#c9bd7a" : "#d9d06a");
+  // 몸통 (노란 블롭, 빙결 시 하늘색, 타입마다 고유 색)
+  const bodyCol = e.hitT > 0 ? "#fff" : (e.frozen > 0 ? "#b8dcf0"
+    : e.boss ? "#e8d44f" : e.tank ? "#c9bd7a"
+    : e.healer ? "#a8e8c8" : e.shield ? "#b8bfcc" : e.ghost ? "#cfc4ee"
+    : e.balloon ? "#ffc8dd" : e.treasure ? "#ffe27a" : "#d9d06a");
   ctx.fillStyle = bodyCol;
   ctx.beginPath();
   ctx.moveTo(-e.r, e.r * 0.8);
@@ -1147,7 +1481,18 @@ function drawEnemy(e) {
   }
   ctx.fillStyle = "#e84f6b";
   ctx.beginPath(); ctx.arc(0, fy, e.r * 0.13, 0, Math.PI * 2); ctx.fill();
-  if (e.boss) outlinedText("👑", 0, -e.r * 1.5, e.r * 0.6, "#fff");
+  // 👑 보스: 왕관 + 패턴 아이콘
+  if (e.boss) {
+    const bt = e.bossType;
+    outlinedText("👑" + (bt === "summoner" ? "🔮" : bt === "charger" ? "💨" : bt === "chiller" ? "❄️" : ""), 0, -e.r * 1.5, e.r * 0.55, "#fff");
+  }
+  // 🛡️ 방패병: 남은 방패 수 표시
+  if (e.shieldHits > 0) outlinedText("🛡️x" + e.shieldHits, 0, -e.r * 1.55, e.r * 0.44, "#eef2ff", "rgba(30,40,60,0.85)", 3);
+  // 🎁 보물 슬라임: 선물 상자 + 남은 시간
+  if (e.treasure) {
+    outlinedText("🎁", 0, -e.r * 1.6, e.r * 0.75, "#fff");
+    outlinedText(Math.max(0, Math.ceil(e.tlife)) + "초", 0, e.r * 1.35, e.r * 0.5, "#ffd93d", "rgba(0,0,0,0.7)", 3);
+  }
   ctx.restore();
   // HP 숫자 (전장에 들어온 뒤에만 표시)
   const ty = e.y - e.r * (e.boss ? 1.9 : 1.75);
@@ -1370,6 +1715,17 @@ function drawGrid() {
     const s = 1 + Math.max(0, u.pop) * 0.25;
     drawUnit(c.x, c.y - Math.max(0, u.recoil) * 5, u.tier, s, 1);
   }
+  // ❄️ 빙결왕 오라가 걸린 레인 표시 (공속 -30%)
+  for (let c = 0; c < COLS; c++) {
+    if (!isChilled(c)) continue;
+    for (let r = 0; r < ROWS; r++) {
+      const x = c * CELL + 4, y = GRID_TOP + r * (CELL - 8) + 2;
+      roundRect(x, y, CELL - 8, CELL - 12, 10);
+      ctx.fillStyle = "rgba(120,200,255,0.28)"; ctx.fill();
+      ctx.strokeStyle = "rgba(200,240,255,0.75)"; ctx.lineWidth = 2; ctx.stroke();
+      outlinedText("❄", x + 15, y + 15, 17, "#e4f6ff", "rgba(20,50,80,0.75)", 3);
+    }
+  }
   // 드래그 중 유닛
   if (drag && grid[drag.idx]) {
     const u = grid[drag.idx];
@@ -1490,6 +1846,14 @@ function drawHUD() {
       const n = buffCount(seen[i]);
       if (n > 1) outlinedText(n, bx + i * bw + bw - 3, 82, 11, "#ffd93d", "rgba(0,0,0,0.8)", 3);
     }
+  }
+
+  // 🌍 현재 테마 뱃지 (좌) / 🎪 진행 중 이벤트 뱃지 (우)
+  const th = curTheme();
+  outlinedText(th.icon + " " + th.name, 58, FIELD_TOP + 12, 16, "#fff", "rgba(0,0,0,0.6)", 4);
+  if (waveEvent && EVENTS[waveEvent]) {
+    const ev = EVENTS[waveEvent];
+    outlinedText(ev.icon + " " + ev.name, W - 70, FIELD_TOP + 12, 16, ev.color, "rgba(0,0,0,0.65)", 4);
   }
 
   // 다음 웨이브 안내
@@ -1786,6 +2150,16 @@ function draw() {
 
   drawGrid();
   drawHUD();
+
+  // 🎪 이벤트 웨이브 화면 테두리 (골드 러시=금색 / 러시아워=빨강 / 보물=초록)
+  if (waveEvent && EVENTS[waveEvent] && state === "play") {
+    ctx.save();
+    ctx.globalAlpha = 0.45 + Math.abs(Math.sin(time * 4)) * 0.4;
+    ctx.strokeStyle = EVENTS[waveEvent].border;
+    ctx.lineWidth = 9;
+    ctx.strokeRect(4.5, 4.5, W - 9, H - 9);
+    ctx.restore();
+  }
 
   // 떠오르는 텍스트
   for (const f of floats) {
